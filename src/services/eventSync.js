@@ -2,8 +2,14 @@ import { getJson } from "serpapi";
 import Event from "../models/Event.js";
 
 const DEFAULT_QUERY = process.env.EVENTS_REFRESH_QUERY || "Events in the Philippines";
-const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_INTERVAL_MS = 8 * 60 * 60 * 1000;
 const REFRESH_INTERVAL_MS = Number(process.env.EVENTS_REFRESH_INTERVAL_MS || DEFAULT_INTERVAL_MS);
+const EVENTS_PER_PAGE = 10;
+const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 20);
+const PAGE_STARTS = Array.from(
+  { length: Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE)) },
+  (_, index) => index * EVENTS_PER_PAGE,
+);
 
 const LUZON_PROVINCES = [
   "Metro Manila",
@@ -59,6 +65,7 @@ const refreshState = {
   lastError: null,
   lastQuery: DEFAULT_QUERY,
   lastResultCount: 0,
+  lastPageStarts: PAGE_STARTS,
 };
 
 let refreshPromise = null;
@@ -172,15 +179,22 @@ const normalizeSerpApiEvent = (rawEvent, query, index) => {
 };
 
 const fetchSerpApiEvents = async (query = DEFAULT_QUERY) => {
-  const results = await getJson({
-    engine: "google_events",
-    q: query,
-    hl: "en",
-    gl: "ph",
-    api_key: process.env.SERPAPI_KEY,
-  });
+  const pageResults = await Promise.all(
+    PAGE_STARTS.map(async (start) => {
+      const results = await getJson({
+        engine: "google_events",
+        q: query,
+        hl: "en",
+        gl: "ph",
+        start,
+        api_key: process.env.SERPAPI_KEY,
+      });
 
-  return Array.isArray(results?.events_results) ? results.events_results : [];
+      return Array.isArray(results?.events_results) ? results.events_results : [];
+    }),
+  );
+
+  return pageResults.flat().slice(0, MAX_RESULTS);
 };
 
 export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "manual" } = {}) => {
@@ -213,7 +227,10 @@ export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "man
     return {
       query,
       reason,
+      requestedCount: MAX_RESULTS,
+      fetchedCount: rawEvents.length,
       count: normalizedEvents.length,
+      pageStarts: PAGE_STARTS,
       refreshedAt: refreshState.lastSuccessAt,
     };
   })()
@@ -264,6 +281,7 @@ export const getEventCatalogStatus = async () => {
     ...refreshState,
     storedCount,
     refreshIntervalMs: REFRESH_INTERVAL_MS,
+    maxResults: MAX_RESULTS,
     nextRefreshAt,
   };
 };
