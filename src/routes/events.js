@@ -3,7 +3,6 @@ import protect from "../middleware/protect.js";
 import Event from "../models/Event.js";
 import SavedEvent from "../models/SavedEvent.js";
 import {
-  ensureEventCatalog,
   getEventCatalogStatus,
   getStoredEvents,
   refreshEventCatalog,
@@ -40,9 +39,8 @@ router.post("/refresh", async (req, res) => {
 
 router.get("/", async (req, res) => {
   try {
-    const location = req.query.location || "All Luzon";
+    const location = req.query.location || "All Philippines";
 
-    await ensureEventCatalog();
     const events = await getStoredEvents(location);
     const totalCount = await Event.countDocuments();
 
