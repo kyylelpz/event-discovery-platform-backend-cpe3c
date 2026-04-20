@@ -1,11 +1,10 @@
 import { getJson } from "serpapi";
 import Event from "../models/Event.js";
 
-const DEFAULT_QUERY = process.env.EVENTS_REFRESH_QUERY || "Events in the Philippines";
-const DEFAULT_INTERVAL_MS = 8 * 60 * 60 * 1000;
-const REFRESH_INTERVAL_MS = Number(process.env.EVENTS_REFRESH_INTERVAL_MS || DEFAULT_INTERVAL_MS);
+const DEFAULT_QUERY =
+  process.env.EVENTS_REFRESH_QUERY || "Future events in the Philippines 2026 2027";
 const EVENTS_PER_PAGE = 10;
-const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 20);
+const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 500);
 const PAGE_STARTS = Array.from(
   { length: Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE)) },
   (_, index) => index * EVENTS_PER_PAGE,
@@ -69,7 +68,6 @@ const refreshState = {
 };
 
 let refreshPromise = null;
-let refreshTimer = null;
 
 const slugify = (value) =>
   String(value || "event")
@@ -211,25 +209,28 @@ export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "man
     const normalizedEvents = rawEvents
       .map((event, index) => normalizeSerpApiEvent(event, query, index))
       .filter((event) => event.title);
+    const dedupedEvents = Array.from(
+      new Map(normalizedEvents.map((event) => [event.eventId, event])).values(),
+    );
 
     await Event.deleteMany({ source: "serpapi" });
 
-    if (normalizedEvents.length > 0) {
-      await Event.insertMany(normalizedEvents, { ordered: false });
+    if (dedupedEvents.length > 0) {
+      await Event.insertMany(dedupedEvents, { ordered: false });
     }
 
     refreshState.lastSuccessAt = new Date().toISOString();
     refreshState.lastError = null;
-    refreshState.lastResultCount = normalizedEvents.length;
+    refreshState.lastResultCount = dedupedEvents.length;
 
-    console.log(`[eventSync] Refreshed ${normalizedEvents.length} events from SerpAPI (${reason})`);
+    console.log(`[eventSync] Seeded ${dedupedEvents.length} events from SerpAPI (${reason})`);
 
     return {
       query,
       reason,
       requestedCount: MAX_RESULTS,
       fetchedCount: rawEvents.length,
-      count: normalizedEvents.length,
+      count: dedupedEvents.length,
       pageStarts: PAGE_STARTS,
       refreshedAt: refreshState.lastSuccessAt,
     };
@@ -273,33 +274,11 @@ export const getStoredEvents = async (location = "All Luzon") => {
 
 export const getEventCatalogStatus = async () => {
   const storedCount = await Event.countDocuments();
-  const nextRefreshAt = refreshState.lastSuccessAt
-    ? new Date(new Date(refreshState.lastSuccessAt).getTime() + REFRESH_INTERVAL_MS).toISOString()
-    : null;
 
   return {
     ...refreshState,
     storedCount,
-    refreshIntervalMs: REFRESH_INTERVAL_MS,
     maxResults: MAX_RESULTS,
-    nextRefreshAt,
+    fetchMode: "one-time-seed",
   };
-};
-
-export const startEventRefreshScheduler = () => {
-  if (refreshTimer) {
-    return;
-  }
-
-  refreshEventCatalog({ reason: "startup" }).catch((error) => {
-    console.error("[eventSync] Initial refresh failed:", error.message);
-  });
-
-  refreshTimer = setInterval(() => {
-    refreshEventCatalog({ reason: "interval" }).catch((error) => {
-      console.error("[eventSync] Scheduled refresh failed:", error.message);
-    });
-  }, REFRESH_INTERVAL_MS);
-
-  refreshTimer.unref?.();
 };
