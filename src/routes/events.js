@@ -2,6 +2,7 @@ import express from "express";
 import { getJson } from "serpapi";
 import protect from "../middleware/protect.js";
 import SavedEvent from "../models/SavedEvent.js";
+import { cloudinary, upload } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
@@ -32,11 +33,14 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
     const newEvent = await SavedEvent.create({
       userId: req.user._id,
       title: req.body.title,
-      location: req.body.location,
+      location: req.body.location || req.body.venue || req.body.province,
       date: req.body.date,
+      time: req.body.time || "",
+      category: req.body.category || "Community",
+      description: req.body.description || "",
       eventUrl: req.body.eventUrl || "",
-      imageUrl: imageUrl, // The Cloudinary URL
-      eventId: cloudinaryId || `custom-${Date.now()}` // Fallback ID
+      imageUrl: imageUrl || req.body.imageUrl || "",
+      eventId: cloudinaryId || `custom-${Date.now()}`
     });
 
     res.status(201).json({ success: true, data: newEvent });
@@ -62,7 +66,7 @@ router.get("/", async (req, res) => {
   try {
     const location = req.query.location || "Manila";
     const events = await fetchFromSerpApi(location);
-    res.json({ success: true, data: events });
+    res.json({ success: true, events });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -71,7 +75,7 @@ router.get("/", async (req, res) => {
 // POST /api/events/save  (protected - must be logged in)
 router.post("/save", protect, async (req, res) => {
   try {
-    const { eventId, title, location, date, imageUrl, eventUrl } = req.body;
+    const { eventId, title, location, date, time, category, description, imageUrl, eventUrl } = req.body;
     const existing = await SavedEvent.findOne({
       userId: req.user._id,
       eventId,
@@ -85,6 +89,9 @@ router.post("/save", protect, async (req, res) => {
       title,
       location,
       date,
+      time,
+      category,
+      description,
       imageUrl,
       eventUrl,
     });

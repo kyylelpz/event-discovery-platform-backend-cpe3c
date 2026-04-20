@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { userDB } from "../routes/db.js";
 
 const SavedEventSchema = new mongoose.Schema(
   {
@@ -11,10 +12,13 @@ const SavedEventSchema = new mongoose.Schema(
     title: { type: String },
     location: { type: String },
     date: { type: String },
+    time: { type: String },
+    category: { type: String },
+    description: { type: String },
     imageUrl: { type: String },
     eventUrl: { type: String },
   },
   { timestamps: true },
 );
 
-export default mongoose.model("SavedEvent", SavedEventSchema);
+export default userDB.model("SavedEvent", SavedEventSchema);

@@ -1,36 +1,48 @@
 import dotenv from "dotenv";
-dotenv.config(); 
+dotenv.config();
 
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import "./routes/db.js"; 
+import passport from "passport";
+import "./routes/db.js";
 
 import authRoutes from "./routes/auth.js";
 import eventRoutes from "./routes/events.js";
 
 const app = express();
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  ...(process.env.CLIENT_URLS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
 
-// ─── Middleware ───────────────────────────────────────
+app.set("trust proxy", 1);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    },
     credentials: true,
-  })
+  }),
 );
 app.use(express.json());
 app.use(cookieParser());
+app.use(passport.initialize());
 
-// ─── Routes ───────────────────────────────────────────
-app.use("/api/auth", authRoutes); 
+app.use("/api/auth", authRoutes);
 app.use("/api/events", eventRoutes);
 
-// ─── Health Check ─────────────────────────────────────
 app.get("/api/health", (req, res) => {
-  res.json({ status: "Backend running " });
+  res.json({ status: "Backend running" });
 });
 
-// ─── Server Start ─────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-

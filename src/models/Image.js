@@ -1,9 +1,10 @@
-const mongoose = require('mongoose');
+import mongoose from "mongoose";
+import { eventDB } from "../routes/db.js";
 
 const imageSchema = new mongoose.Schema({
   title: String,
-  imageUrl: String,    // This stores the link from Cloudinary
-  cloudinaryId: String // Useful if you ever need to delete the image later
+  imageUrl: String,
+  cloudinaryId: String,
 });
 
-module.exports = mongoose.model('Image', imageSchema);
+export default eventDB.model("Image", imageSchema);
