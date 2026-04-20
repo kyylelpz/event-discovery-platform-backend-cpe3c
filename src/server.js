@@ -9,6 +9,7 @@ import "./routes/db.js";
 
 import authRoutes from "./routes/auth.js";
 import eventRoutes from "./routes/events.js";
+import { startEventRefreshScheduler } from "./services/eventSync.js";
 
 const app = express();
 const allowedOrigins = [
@@ -43,6 +44,8 @@ app.use("/api/events", eventRoutes);
 app.get("/api/health", (req, res) => {
   res.json({ status: "Backend running" });
 });
+
+startEventRefreshScheduler();
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
