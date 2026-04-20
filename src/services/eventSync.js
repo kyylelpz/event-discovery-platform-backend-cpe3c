@@ -1,31 +1,96 @@
 import { getJson } from "serpapi";
 import Event from "../models/Event.js";
 
-const DEFAULT_QUERY =
-  process.env.EVENTS_REFRESH_QUERY || "Future events in the Philippines 2026 2027";
+const DEFAULT_LOCATION = process.env.EVENTS_REFRESH_LOCATION || "Philippines";
+const DEFAULT_QUERY = process.env.EVENTS_REFRESH_QUERY || "Events in the Philippines";
+const FALLBACK_QUERY = process.env.EVENTS_FALLBACK_QUERY || "Concerts in the Philippines";
 const EVENTS_PER_PAGE = 10;
-const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 500);
-const PAGE_STARTS = Array.from(
-  { length: Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE)) },
-  (_, index) => index * EVENTS_PER_PAGE,
-);
+const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 200);
+const MAX_PAGES = Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE));
 
-const LUZON_PROVINCES = [
-  "Metro Manila",
-  "Batangas",
-  "Cavite",
-  "Laguna",
-  "Rizal",
-  "Bulacan",
-  "Pampanga",
+const PROVINCES = [
+  "Abra",
+  "Agusan del Norte",
+  "Agusan del Sur",
+  "Aklan",
+  "Albay",
+  "Antique",
+  "Apayao",
+  "Aurora",
+  "Basilan",
   "Bataan",
-  "Nueva Ecija",
-  "Tarlac",
-  "Zambales",
-  "Pangasinan",
-  "La Union",
+  "Batanes",
+  "Batangas",
   "Benguet",
+  "Biliran",
+  "Bohol",
+  "Bukidnon",
+  "Bulacan",
+  "Cagayan",
+  "Camarines Norte",
+  "Camarines Sur",
+  "Camiguin",
+  "Capiz",
+  "Catanduanes",
+  "Cavite",
+  "Cebu",
+  "Cotabato",
+  "Davao de Oro",
+  "Davao del Norte",
+  "Davao del Sur",
+  "Davao Occidental",
+  "Davao Oriental",
+  "Dinagat Islands",
+  "Eastern Samar",
+  "Guimaras",
+  "Ifugao",
+  "Ilocos Norte",
+  "Ilocos Sur",
+  "Iloilo",
+  "Isabela",
+  "Kalinga",
+  "La Union",
+  "Laguna",
+  "Lanao del Norte",
+  "Lanao del Sur",
+  "Leyte",
+  "Maguindanao del Norte",
+  "Maguindanao del Sur",
+  "Marinduque",
+  "Masbate",
+  "Misamis Occidental",
+  "Misamis Oriental",
+  "Mountain Province",
+  "Negros Occidental",
+  "Negros Oriental",
+  "Northern Samar",
+  "Nueva Ecija",
+  "Nueva Vizcaya",
+  "Occidental Mindoro",
+  "Oriental Mindoro",
+  "Palawan",
+  "Pampanga",
+  "Pangasinan",
   "Quezon",
+  "Quirino",
+  "Rizal",
+  "Romblon",
+  "Samar",
+  "Sarangani",
+  "Siquijor",
+  "Sorsogon",
+  "South Cotabato",
+  "Southern Leyte",
+  "Sultan Kudarat",
+  "Sulu",
+  "Surigao del Norte",
+  "Surigao del Sur",
+  "Tarlac",
+  "Tawi-Tawi",
+  "Zambales",
+  "Zamboanga del Norte",
+  "Zamboanga del Sur",
+  "Zamboanga Sibugay",
 ];
 
 const METRO_MANILA_KEYWORDS = [
@@ -64,7 +129,7 @@ const refreshState = {
   lastError: null,
   lastQuery: DEFAULT_QUERY,
   lastResultCount: 0,
-  lastPageStarts: PAGE_STARTS,
+  lastPageStarts: [],
 };
 
 let refreshPromise = null;
@@ -132,7 +197,7 @@ const detectProvince = (event) => {
     return "Metro Manila";
   }
 
-  const matchedProvince = LUZON_PROVINCES.find((province) =>
+  const matchedProvince = PROVINCES.find((province) =>
     text.includes(province.toLowerCase()),
   );
 
@@ -176,23 +241,63 @@ const normalizeSerpApiEvent = (rawEvent, query, index) => {
   return normalizedEvent;
 };
 
+const fetchSerpApiEventsForQuery = async (query) => {
+  const allEvents = [];
+  const pageStarts = [];
+
+  for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex += 1) {
+    const start = pageIndex * EVENTS_PER_PAGE;
+
+    const results = await getJson({
+      engine: "google_events",
+      q: query,
+      location: DEFAULT_LOCATION,
+      hl: "en",
+      gl: "ph",
+      start,
+      api_key: process.env.SERPAPI_KEY,
+    });
+
+    const pageEvents = Array.isArray(results?.events_results) ? results.events_results : [];
+
+    pageStarts.push(start);
+    allEvents.push(...pageEvents);
+
+    // Stop when SerpAPI has no more pages or returns a partial final page.
+    if (pageEvents.length < EVENTS_PER_PAGE || allEvents.length >= MAX_RESULTS) {
+      break;
+    }
+  }
+
+  return {
+    events: allEvents.slice(0, MAX_RESULTS),
+    pageStarts,
+  };
+};
+
 const fetchSerpApiEvents = async (query = DEFAULT_QUERY) => {
-  const pageResults = await Promise.all(
-    PAGE_STARTS.map(async (start) => {
-      const results = await getJson({
-        engine: "google_events",
-        q: query,
-        hl: "en",
-        gl: "ph",
-        start,
-        api_key: process.env.SERPAPI_KEY,
-      });
+  const attemptedQueries = [];
+  const queriesToTry = Array.from(new Set([query, FALLBACK_QUERY].filter(Boolean)));
 
-      return Array.isArray(results?.events_results) ? results.events_results : [];
-    }),
-  );
+  for (const queryToTry of queriesToTry) {
+    attemptedQueries.push(queryToTry);
+    const result = await fetchSerpApiEventsForQuery(queryToTry);
 
-  return pageResults.flat().slice(0, MAX_RESULTS);
+    if (result.events.length > 0) {
+      return {
+        ...result,
+        resolvedQuery: queryToTry,
+        attemptedQueries,
+      };
+    }
+  }
+
+  return {
+    events: [],
+    pageStarts: [],
+    resolvedQuery: query,
+    attemptedQueries,
+  };
 };
 
 export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "manual" } = {}) => {
@@ -205,9 +310,14 @@ export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "man
   refreshState.lastQuery = query;
 
   refreshPromise = (async () => {
-    const rawEvents = await fetchSerpApiEvents(query);
+    const {
+      events: rawEvents,
+      pageStarts,
+      resolvedQuery,
+      attemptedQueries,
+    } = await fetchSerpApiEvents(query);
     const normalizedEvents = rawEvents
-      .map((event, index) => normalizeSerpApiEvent(event, query, index))
+      .map((event, index) => normalizeSerpApiEvent(event, resolvedQuery, index))
       .filter((event) => event.title);
     const dedupedEvents = Array.from(
       new Map(normalizedEvents.map((event) => [event.eventId, event])).values(),
@@ -222,16 +332,21 @@ export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "man
     refreshState.lastSuccessAt = new Date().toISOString();
     refreshState.lastError = null;
     refreshState.lastResultCount = dedupedEvents.length;
+    refreshState.lastPageStarts = pageStarts;
+    refreshState.lastQuery = resolvedQuery;
 
-    console.log(`[eventSync] Seeded ${dedupedEvents.length} events from SerpAPI (${reason})`);
+    console.log(
+      `[eventSync] Seeded ${dedupedEvents.length} events from SerpAPI (${reason}) using query "${resolvedQuery}"`,
+    );
 
     return {
-      query,
+      query: resolvedQuery,
+      attemptedQueries,
       reason,
       requestedCount: MAX_RESULTS,
       fetchedCount: rawEvents.length,
       count: dedupedEvents.length,
-      pageStarts: PAGE_STARTS,
+      pageStarts,
       refreshedAt: refreshState.lastSuccessAt,
     };
   })()
@@ -248,18 +363,10 @@ export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "man
   return refreshPromise;
 };
 
-export const ensureEventCatalog = async () => {
-  const count = await Event.countDocuments();
-
-  if (count === 0) {
-    await refreshEventCatalog({ reason: "cache-miss" });
-  }
-};
-
-export const getStoredEvents = async (location = "All Luzon") => {
+export const getStoredEvents = async (location = "All Philippines") => {
   const query = {};
 
-  if (location && location !== "All Luzon") {
+  if (location && location !== "All Philippines") {
     const pattern = new RegExp(escapeRegex(location), "i");
     query.$or = [
       { province: location },
@@ -279,6 +386,8 @@ export const getEventCatalogStatus = async () => {
     ...refreshState,
     storedCount,
     maxResults: MAX_RESULTS,
-    fetchMode: "one-time-seed",
+    fetchMode: "manual-only",
+    autoRefreshOnDeploy: false,
+    location: DEFAULT_LOCATION,
   };
 };
