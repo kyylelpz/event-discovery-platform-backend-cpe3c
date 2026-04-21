@@ -7,6 +7,7 @@ const FALLBACK_QUERY = process.env.EVENTS_FALLBACK_QUERY || "Concerts in the Phi
 const EVENTS_PER_PAGE = 10;
 const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 200);
 const MAX_PAGES = Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE));
+const TARGET_IMAGE_WIDTH = Number(process.env.EVENTS_IMAGE_WIDTH || 1600);
 
 const PROVINCES = [
   "Abra",
@@ -171,8 +172,211 @@ const getVenue = (event) =>
 
 const getAddress = (event) => asText(event.address || event.location);
 
-const getImageUrl = (event) =>
-  asText(event.thumbnail || event.image || event.imageUrl || event.thumbnail_url);
+const normalizeImageProtocol = (value) => (value.startsWith("//") ? `https:${value}` : value);
+
+const collectImageCandidates = (value) => {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectImageCandidates(item));
+  }
+
+  if (typeof value === "string") {
+    const imageUrl = value.trim();
+    return imageUrl ? [normalizeImageProtocol(imageUrl)] : [];
+  }
+
+  if (typeof value === "object") {
+    return [
+      value.url,
+      value.src,
+      value.image,
+      value.imageUrl,
+      value.thumbnail,
+      value.thumbnail_url,
+      value.original,
+      value.original?.url,
+      value.large,
+      value.large?.url,
+      value.full,
+      value.full?.url,
+    ].flatMap((item) => collectImageCandidates(item));
+  }
+
+  return [];
+};
+
+const updateNumericSearchParams = (searchParams, keys, nextValue) => {
+  let updated = false;
+
+  keys.forEach((key) => {
+    if (searchParams.has(key)) {
+      searchParams.set(key, String(nextValue));
+      updated = true;
+    }
+  });
+
+  return updated;
+};
+
+const optimizeCloudinaryImageUrl = (imageUrl, width = TARGET_IMAGE_WIDTH) => {
+  if (!imageUrl.includes("/image/upload/")) {
+    return imageUrl;
+  }
+
+  const [prefix, suffix] = imageUrl.split("/image/upload/");
+
+  if (!suffix) {
+    return imageUrl;
+  }
+
+  const firstSegment = suffix.split("/")[0];
+  const alreadyHasTransforms = firstSegment && !/^v\d+$/i.test(firstSegment);
+
+  if (alreadyHasTransforms) {
+    return imageUrl;
+  }
+
+  return `${prefix}/image/upload/f_auto,q_auto:good,w_${width}/${suffix}`;
+};
+
+const optimizeGoogleHostedImageUrl = (imageUrl, width = TARGET_IMAGE_WIDTH) => {
+  const targetHeight = Math.max(900, Math.round(width * 0.625));
+
+  try {
+    const url = new URL(imageUrl);
+    const isGoogleHosted =
+      /(googleusercontent\.com|ggpht\.com|googleapis\.com|gstatic\.com)$/i.test(url.hostname);
+
+    if (!isGoogleHosted) {
+      return imageUrl;
+    }
+
+    const updatedWidth = updateNumericSearchParams(url.searchParams, ["w", "width", "sz", "s"], width);
+    const updatedHeight = updateNumericSearchParams(url.searchParams, ["h", "height"], targetHeight);
+    const updatedQuality = updateNumericSearchParams(url.searchParams, ["q", "quality"], 90);
+
+    if (updatedWidth || updatedHeight || updatedQuality) {
+      return url.toString();
+    }
+  } catch {
+    return imageUrl;
+  }
+
+  if (/=([a-z0-9,_-]+)$/i.test(imageUrl)) {
+    return imageUrl.replace(/=([a-z0-9,_-]+)$/i, `=w${width}-h${targetHeight}-p-k-no-nu`);
+  }
+
+  return imageUrl;
+};
+
+const optimizeGenericImageUrl = (imageUrl, width = TARGET_IMAGE_WIDTH) => {
+  const targetHeight = Math.max(900, Math.round(width * 0.625));
+
+  try {
+    const url = new URL(imageUrl);
+    let updated = false;
+
+    updated =
+      updateNumericSearchParams(url.searchParams, ["w", "width", "maxwidth", "imwidth"], width) ||
+      updated;
+    updated =
+      updateNumericSearchParams(url.searchParams, ["h", "height", "maxheight"], targetHeight) ||
+      updated;
+    updated = updateNumericSearchParams(url.searchParams, ["q", "quality"], 90) || updated;
+
+    return updated ? url.toString() : imageUrl;
+  } catch {
+    return imageUrl;
+  }
+};
+
+const optimizeImageUrl = (imageUrl) => {
+  if (!imageUrl || /^data:/i.test(imageUrl)) {
+    return imageUrl;
+  }
+
+  try {
+    const url = new URL(imageUrl);
+
+    if (url.hostname.includes("images.unsplash.com")) {
+      url.searchParams.set("auto", "format");
+      url.searchParams.set("fit", "max");
+      url.searchParams.set("fm", "jpg");
+      url.searchParams.set("q", "90");
+      url.searchParams.set("w", String(TARGET_IMAGE_WIDTH));
+      return url.toString();
+    }
+  } catch {
+    return imageUrl;
+  }
+
+  return optimizeGenericImageUrl(
+    optimizeGoogleHostedImageUrl(optimizeCloudinaryImageUrl(imageUrl)),
+  );
+};
+
+const getImageCandidateScore = (imageUrl) => {
+  let score = 0;
+  const widthHints = Array.from(
+    imageUrl.matchAll(/(?:[?&](?:w|width|sz|s)=|=w|=s)(\d{2,4})/gi),
+  ).map((match) => Number(match[1]));
+
+  if (widthHints.length > 0) {
+    score += Math.max(...widthHints) / 400;
+  }
+
+  try {
+    const url = new URL(imageUrl);
+
+    if (url.hostname.includes("images.unsplash.com")) {
+      score += 6;
+    }
+
+    if (url.hostname.includes("cloudinary.com")) {
+      score += 5;
+    }
+
+    if (/(googleusercontent\.com|ggpht\.com|googleapis\.com)$/i.test(url.hostname)) {
+      score += 4;
+    }
+
+    if (url.hostname.includes("encrypted-tbn") || url.hostname.includes("gstatic.com")) {
+      score -= 4;
+    }
+  } catch {
+    return score;
+  }
+
+  return score;
+};
+
+const getImageUrl = (event) => {
+  const candidates = Array.from(
+    new Set(
+      [
+        ...collectImageCandidates(event.image),
+        ...collectImageCandidates(event.imageUrl),
+        ...collectImageCandidates(event.images),
+        ...collectImageCandidates(event.thumbnail_url),
+        ...collectImageCandidates(event.thumbnail),
+        ...collectImageCandidates(event.logo),
+        ...collectImageCandidates(event.rawPayload?.image),
+        ...collectImageCandidates(event.rawPayload?.thumbnail),
+      ]
+        .filter(Boolean)
+        .map((candidate) => optimizeImageUrl(candidate)),
+    ),
+  );
+
+  if (!candidates.length) {
+    return "";
+  }
+
+  return candidates.sort((left, right) => getImageCandidateScore(right) - getImageCandidateScore(left))[0];
+};
 
 const inferCategory = (event) => {
   const text = [event.title, event.description, event.venue, event.address]
