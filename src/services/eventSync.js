@@ -2,11 +2,14 @@ import { getJson } from "serpapi";
 import Event from "../models/Event.js";
 
 const DEFAULT_LOCATION = process.env.EVENTS_REFRESH_LOCATION || "Philippines";
-const DEFAULT_QUERY = process.env.EVENTS_REFRESH_QUERY || "Events in the Philippines";
-const FALLBACK_QUERY = process.env.EVENTS_FALLBACK_QUERY || "Concerts in the Philippines";
+const DEFAULT_QUERY =
+  process.env.EVENTS_REFRESH_QUERY || "Events in the Philippines";
+const FALLBACK_QUERY =
+  process.env.EVENTS_FALLBACK_QUERY || "Concerts in the Philippines";
 const EVENTS_PER_PAGE = 10;
 const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 200);
 const MAX_PAGES = Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE));
+const TARGET_IMAGE_WIDTH = Number(process.env.EVENTS_IMAGE_WIDTH || 1600);
 
 const PROVINCES = [
   "Abra",
@@ -115,11 +118,67 @@ const METRO_MANILA_KEYWORDS = [
 ];
 
 const CATEGORY_RULES = [
-  { category: "Music", keywords: ["concert", "music", "festival", "gig", "live", "dj", "band", "jazz"] },
-  { category: "Art & Culture", keywords: ["museum", "art", "gallery", "cultural", "culture", "exhibit", "theater"] },
-  { category: "Business", keywords: ["conference", "summit", "networking", "expo", "business", "startup", "forum"] },
-  { category: "Food & Drink", keywords: ["food", "drink", "dinner", "tasting", "culinary", "market", "coffee"] },
-  { category: "Tech", keywords: ["tech", "developer", "software", "ai", "product", "hackathon", "web3"] },
+  {
+    category: "Music",
+    keywords: [
+      "concert",
+      "music",
+      "festival",
+      "gig",
+      "live",
+      "dj",
+      "band",
+      "jazz",
+    ],
+  },
+  {
+    category: "Art & Culture",
+    keywords: [
+      "museum",
+      "art",
+      "gallery",
+      "cultural",
+      "culture",
+      "exhibit",
+      "theater",
+    ],
+  },
+  {
+    category: "Business",
+    keywords: [
+      "conference",
+      "summit",
+      "networking",
+      "expo",
+      "business",
+      "startup",
+      "forum",
+    ],
+  },
+  {
+    category: "Food & Drink",
+    keywords: [
+      "food",
+      "drink",
+      "dinner",
+      "tasting",
+      "culinary",
+      "market",
+      "coffee",
+    ],
+  },
+  {
+    category: "Tech",
+    keywords: [
+      "tech",
+      "developer",
+      "software",
+      "ai",
+      "product",
+      "hackathon",
+      "web3",
+    ],
+  },
 ];
 
 const refreshState = {
@@ -167,19 +226,17 @@ const getTimeLabel = (event) =>
   asText(event.date?.when || event.start_time || event.time || event.when);
 
 const getVenue = (event) =>
-  asText(event.venue?.name || event.venue?.title || event.venue_name || event.location);
+  asText(
+    event.venue?.name ||
+      event.venue?.title ||
+      event.venue_name ||
+      event.location,
+  );
 
 const getAddress = (event) => asText(event.address || event.location);
 
 const normalizeImageProtocol = (value) =>
   value.startsWith("//") ? `https:${value}` : value;
-
-const imageSkipPatterns = [
-  /googleapis\.com\/maps/i,
-  /staticmap/i,
-  /maps\.gstatic/i,
-  /placehold/i,
-];
 
 const collectImageCandidates = (value) => {
   if (!value) {
@@ -191,8 +248,8 @@ const collectImageCandidates = (value) => {
   }
 
   if (typeof value === "string") {
-    const normalizedValue = value.trim();
-    return normalizedValue ? [normalizeImageProtocol(normalizedValue)] : [];
+    const imageUrl = value.trim();
+    return imageUrl ? [normalizeImageProtocol(imageUrl)] : [];
   }
 
   if (typeof value === "object") {
@@ -209,15 +266,186 @@ const collectImageCandidates = (value) => {
       value.large?.url,
       value.full,
       value.full?.url,
-      value.logo,
     ].flatMap((item) => collectImageCandidates(item));
   }
 
   return [];
 };
 
-const isUsableEventImage = (imageUrl) =>
-  Boolean(imageUrl) && !imageSkipPatterns.some((pattern) => pattern.test(imageUrl));
+const updateNumericSearchParams = (searchParams, keys, nextValue) => {
+  let updated = false;
+
+  keys.forEach((key) => {
+    if (searchParams.has(key)) {
+      searchParams.set(key, String(nextValue));
+      updated = true;
+    }
+  });
+
+  return updated;
+};
+
+const optimizeCloudinaryImageUrl = (imageUrl, width = TARGET_IMAGE_WIDTH) => {
+  if (!imageUrl.includes("/image/upload/")) {
+    return imageUrl;
+  }
+
+  const [prefix, suffix] = imageUrl.split("/image/upload/");
+
+  if (!suffix) {
+    return imageUrl;
+  }
+
+  const firstSegment = suffix.split("/")[0];
+  const alreadyHasTransforms = firstSegment && !/^v\d+$/i.test(firstSegment);
+
+  if (alreadyHasTransforms) {
+    return imageUrl;
+  }
+
+  return `${prefix}/image/upload/f_auto,q_auto:good,w_${width}/${suffix}`;
+};
+
+const optimizeGoogleHostedImageUrl = (imageUrl, width = TARGET_IMAGE_WIDTH) => {
+  const targetHeight = Math.max(900, Math.round(width * 0.625));
+
+  try {
+    const url = new URL(imageUrl);
+    const isGoogleHosted =
+      /(googleusercontent\.com|ggpht\.com|googleapis\.com|gstatic\.com)$/i.test(
+        url.hostname,
+      );
+
+    if (!isGoogleHosted) {
+      return imageUrl;
+    }
+
+    const updatedWidth = updateNumericSearchParams(
+      url.searchParams,
+      ["w", "width", "sz", "s"],
+      width,
+    );
+    const updatedHeight = updateNumericSearchParams(
+      url.searchParams,
+      ["h", "height"],
+      targetHeight,
+    );
+    const updatedQuality = updateNumericSearchParams(
+      url.searchParams,
+      ["q", "quality"],
+      90,
+    );
+
+    if (updatedWidth || updatedHeight || updatedQuality) {
+      return url.toString();
+    }
+  } catch {
+    return imageUrl;
+  }
+
+  if (/=([a-z0-9,_-]+)$/i.test(imageUrl)) {
+    return imageUrl.replace(
+      /=([a-z0-9,_-]+)$/i,
+      `=w${width}-h${targetHeight}-p-k-no-nu`,
+    );
+  }
+
+  return imageUrl;
+};
+
+const optimizeGenericImageUrl = (imageUrl, width = TARGET_IMAGE_WIDTH) => {
+  const targetHeight = Math.max(900, Math.round(width * 0.625));
+
+  try {
+    const url = new URL(imageUrl);
+    let updated = false;
+
+    updated =
+      updateNumericSearchParams(
+        url.searchParams,
+        ["w", "width", "maxwidth", "imwidth"],
+        width,
+      ) || updated;
+    updated =
+      updateNumericSearchParams(
+        url.searchParams,
+        ["h", "height", "maxheight"],
+        targetHeight,
+      ) || updated;
+    updated =
+      updateNumericSearchParams(url.searchParams, ["q", "quality"], 90) ||
+      updated;
+
+    return updated ? url.toString() : imageUrl;
+  } catch {
+    return imageUrl;
+  }
+};
+
+const optimizeImageUrl = (imageUrl) => {
+  if (!imageUrl || /^data:/i.test(imageUrl)) {
+    return imageUrl;
+  }
+
+  try {
+    const url = new URL(imageUrl);
+
+    if (url.hostname.includes("images.unsplash.com")) {
+      url.searchParams.set("auto", "format");
+      url.searchParams.set("fit", "max");
+      url.searchParams.set("fm", "jpg");
+      url.searchParams.set("q", "90");
+      url.searchParams.set("w", String(TARGET_IMAGE_WIDTH));
+      return url.toString();
+    }
+  } catch {
+    return imageUrl;
+  }
+
+  return optimizeGenericImageUrl(
+    optimizeGoogleHostedImageUrl(optimizeCloudinaryImageUrl(imageUrl)),
+  );
+};
+
+const getImageCandidateScore = (imageUrl) => {
+  let score = 0;
+  const widthHints = Array.from(
+    imageUrl.matchAll(/(?:[?&](?:w|width|sz|s)=|=w|=s)(\d{2,4})/gi),
+  ).map((match) => Number(match[1]));
+
+  if (widthHints.length > 0) {
+    score += Math.max(...widthHints) / 400;
+  }
+
+  try {
+    const url = new URL(imageUrl);
+
+    if (url.hostname.includes("images.unsplash.com")) {
+      score += 6;
+    }
+
+    if (url.hostname.includes("cloudinary.com")) {
+      score += 5;
+    }
+
+    if (
+      /(googleusercontent\.com|ggpht\.com|googleapis\.com)$/i.test(url.hostname)
+    ) {
+      score += 4;
+    }
+
+    if (
+      url.hostname.includes("encrypted-tbn") ||
+      url.hostname.includes("gstatic.com")
+    ) {
+      score -= 4;
+    }
+  } catch {
+    return score;
+  }
+
+  return score;
+};
 
 const getImageUrl = (event) => {
   const candidates = Array.from(
@@ -226,15 +454,25 @@ const getImageUrl = (event) => {
         ...collectImageCandidates(event.image),
         ...collectImageCandidates(event.imageUrl),
         ...collectImageCandidates(event.images),
-        ...collectImageCandidates(event.photo),
         ...collectImageCandidates(event.thumbnail_url),
         ...collectImageCandidates(event.thumbnail),
         ...collectImageCandidates(event.logo),
-      ],
+        ...collectImageCandidates(event.rawPayload?.image),
+        ...collectImageCandidates(event.rawPayload?.thumbnail),
+      ]
+        .filter(Boolean)
+        .map((candidate) => optimizeImageUrl(candidate)),
     ),
   );
 
-  return candidates.find((candidate) => isUsableEventImage(candidate)) || candidates[0] || "";
+  if (!candidates.length) {
+    return "";
+  }
+
+  return candidates.sort(
+    (left, right) =>
+      getImageCandidateScore(right) - getImageCandidateScore(left),
+  )[0];
 };
 
 const inferCategory = (event) => {
@@ -251,7 +489,13 @@ const inferCategory = (event) => {
 };
 
 const detectProvince = (event) => {
-  const text = [event.title, event.venue, event.address, event.location, event.description]
+  const text = [
+    event.title,
+    event.venue,
+    event.address,
+    event.location,
+    event.description,
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -268,11 +512,14 @@ const detectProvince = (event) => {
 };
 
 const normalizeSerpApiEvent = (rawEvent, query, index) => {
-  const title = asText(rawEvent.title || rawEvent.name) || `Untitled Event ${index + 1}`;
+  const title =
+    asText(rawEvent.title || rawEvent.name) || `Untitled Event ${index + 1}`;
   const venue = getVenue(rawEvent);
   const address = getAddress(rawEvent);
   const location = [venue, address].filter(Boolean).join(", ") || "Philippines";
-  const description = asText(rawEvent.description || rawEvent.ticket_info || rawEvent.info);
+  const description = asText(
+    rawEvent.description || rawEvent.ticket_info || rawEvent.info,
+  );
   const startDate = getStartDate(rawEvent);
   const timeLabel = getTimeLabel(rawEvent);
   const eventUrl = asText(rawEvent.link || rawEvent.event_link || rawEvent.url);
@@ -321,13 +568,18 @@ const fetchSerpApiEventsForQuery = async (query) => {
       api_key: process.env.SERPAPI_KEY,
     });
 
-    const pageEvents = Array.isArray(results?.events_results) ? results.events_results : [];
+    const pageEvents = Array.isArray(results?.events_results)
+      ? results.events_results
+      : [];
 
     pageStarts.push(start);
     allEvents.push(...pageEvents);
 
     // Stop when SerpAPI has no more pages or returns a partial final page.
-    if (pageEvents.length < EVENTS_PER_PAGE || allEvents.length >= MAX_RESULTS) {
+    if (
+      pageEvents.length < EVENTS_PER_PAGE ||
+      allEvents.length >= MAX_RESULTS
+    ) {
       break;
     }
   }
@@ -340,7 +592,9 @@ const fetchSerpApiEventsForQuery = async (query) => {
 
 const fetchSerpApiEvents = async (query = DEFAULT_QUERY) => {
   const attemptedQueries = [];
-  const queriesToTry = Array.from(new Set([query, FALLBACK_QUERY].filter(Boolean)));
+  const queriesToTry = Array.from(
+    new Set([query, FALLBACK_QUERY].filter(Boolean)),
+  );
 
   for (const queryToTry of queriesToTry) {
     attemptedQueries.push(queryToTry);
@@ -363,7 +617,10 @@ const fetchSerpApiEvents = async (query = DEFAULT_QUERY) => {
   };
 };
 
-export const refreshEventCatalog = async ({ query = DEFAULT_QUERY, reason = "manual" } = {}) => {
+export const refreshEventCatalog = async ({
+  query = DEFAULT_QUERY,
+  reason = "manual",
+} = {}) => {
   if (refreshPromise) {
     return refreshPromise;
   }
