@@ -484,11 +484,17 @@ const getImageUrl = (event) => {
     isUsableEventImage(candidate),
   );
 
-  if (!usableCandidates.length) {
+  if (usableCandidates.length > 0) {
+    return usableCandidates.sort(
+      (left, right) => getImageCandidateScore(right) - getImageCandidateScore(left),
+    )[0];
+  }
+
+  if (!candidates.length) {
     return "";
   }
 
-  return usableCandidates.sort(
+  return candidates.sort(
     (left, right) => getImageCandidateScore(right) - getImageCandidateScore(left),
   )[0];
 };
