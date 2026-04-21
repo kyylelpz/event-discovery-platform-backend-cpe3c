@@ -40,11 +40,12 @@ const buildCookieOptions = () => {
   return options;
 };
 
-const attachAuthCookie = (res, userId) => {
-  const token = jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+const createAuthToken = (userId) =>
+  jwt.sign({ id: userId }, process.env.JWT_SECRET, {
     expiresIn: "7d",
   });
 
+const attachAuthCookie = (res, token) => {
   res.cookie("token", token, buildCookieOptions());
 };
 
@@ -124,7 +125,8 @@ router.get(
     failureRedirect: "/login",
   }),
   (req, res) => {
-    attachAuthCookie(res, req.user._id);
+    const token = createAuthToken(req.user._id);
+    attachAuthCookie(res, token);
     res.redirect(
       process.env.AUTH_SUCCESS_REDIRECT_URL || `${clientAppUrl}/events`,
     );
@@ -160,10 +162,12 @@ router.post("/register", async (req, res) => {
     });
 
     await newUser.save();
-    attachAuthCookie(res, newUser._id);
+    const token = createAuthToken(newUser._id);
+    attachAuthCookie(res, token);
 
     res.status(201).json({
       message: "Account created successfully!",
+      token,
       user: serializeUser(newUser),
     });
   } catch (error) {
@@ -203,10 +207,12 @@ router.post("/login", async (req, res) => {
     }
 
     await user.save();
-    attachAuthCookie(res, user._id);
+    const token = createAuthToken(user._id);
+    attachAuthCookie(res, token);
 
     res.status(200).json({
       message: "Login successful! Welcome back.",
+      token,
       user: serializeUser(user),
     });
   } catch (error) {
