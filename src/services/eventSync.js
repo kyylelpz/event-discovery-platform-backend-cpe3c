@@ -171,8 +171,71 @@ const getVenue = (event) =>
 
 const getAddress = (event) => asText(event.address || event.location);
 
-const getImageUrl = (event) =>
-  asText(event.thumbnail || event.image || event.imageUrl || event.thumbnail_url);
+const normalizeImageProtocol = (value) =>
+  value.startsWith("//") ? `https:${value}` : value;
+
+const imageSkipPatterns = [
+  /googleapis\.com\/maps/i,
+  /staticmap/i,
+  /maps\.gstatic/i,
+  /placehold/i,
+];
+
+const collectImageCandidates = (value) => {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectImageCandidates(item));
+  }
+
+  if (typeof value === "string") {
+    const normalizedValue = value.trim();
+    return normalizedValue ? [normalizeImageProtocol(normalizedValue)] : [];
+  }
+
+  if (typeof value === "object") {
+    return [
+      value.url,
+      value.src,
+      value.image,
+      value.imageUrl,
+      value.thumbnail,
+      value.thumbnail_url,
+      value.original,
+      value.original?.url,
+      value.large,
+      value.large?.url,
+      value.full,
+      value.full?.url,
+      value.logo,
+    ].flatMap((item) => collectImageCandidates(item));
+  }
+
+  return [];
+};
+
+const isUsableEventImage = (imageUrl) =>
+  Boolean(imageUrl) && !imageSkipPatterns.some((pattern) => pattern.test(imageUrl));
+
+const getImageUrl = (event) => {
+  const candidates = Array.from(
+    new Set(
+      [
+        ...collectImageCandidates(event.image),
+        ...collectImageCandidates(event.imageUrl),
+        ...collectImageCandidates(event.images),
+        ...collectImageCandidates(event.photo),
+        ...collectImageCandidates(event.thumbnail_url),
+        ...collectImageCandidates(event.thumbnail),
+        ...collectImageCandidates(event.logo),
+      ],
+    ),
+  );
+
+  return candidates.find((candidate) => isUsableEventImage(candidate)) || candidates[0] || "";
+};
 
 const inferCategory = (event) => {
   const text = [event.title, event.description, event.venue, event.address]
