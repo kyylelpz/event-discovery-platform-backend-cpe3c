@@ -39,6 +39,11 @@ const userSchema = new mongoose.Schema(
     },
 
     avatar: String,
+    location: {
+      type: String,
+      trim: true,
+      default: "Philippines",
+    },
     phone: {
       type: String,
       trim: true,
@@ -65,4 +70,4 @@ const userSchema = new mongoose.Schema(
 );
 
 
-export default userDB.model("User", userSchema);
+export default userDB.models.User || userDB.model("User", userSchema);

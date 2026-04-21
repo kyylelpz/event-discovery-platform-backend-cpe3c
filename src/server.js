@@ -11,6 +11,7 @@ import authRoutes from "./routes/auth.js";
 import eventRoutes from "./routes/events.js";
 import interactionRoutes from "./routes/interactions.js";
 import profileRoutes from "./routes/profile.js";
+import userRoutes from "./routes/users.js";
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -56,6 +57,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/interactions", interactionRoutes);
 app.use("/api/profile", profileRoutes);
+app.use("/api/users", userRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "Backend running" });

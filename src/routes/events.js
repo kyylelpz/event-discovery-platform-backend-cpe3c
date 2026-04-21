@@ -1,7 +1,9 @@
 import express from "express";
 import protect from "../middleware/protect.js";
+import CreatedEvent from "../models/CreatedEvent.js";
 import Event from "../models/Event.js";
 import SavedEvent from "../models/SavedEvent.js";
+import User from "../models/User.js";
 import {
   getEventCatalogStatus,
   getStoredEvents,
@@ -10,6 +12,62 @@ import {
 import { cloudinary, upload } from "../utils/cloudinary.js";
 
 const router = express.Router();
+
+const escapeRegex = (value) =>
+  String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const buildCreatedEventsQuery = ({ location, userId } = {}) => {
+  const query = {};
+
+  if (userId) {
+    query.userId = userId;
+  }
+
+  if (location && location !== "All Philippines") {
+    const pattern = new RegExp(escapeRegex(location), "i");
+    query.$or = [
+      { province: location },
+      { location: pattern },
+      { address: pattern },
+      { venue: pattern },
+    ];
+  }
+
+  return query;
+};
+
+const serializeCreatedEvent = (event) => ({
+  id: String(event._id),
+  eventId: event.eventId,
+  title: event.title,
+  description: event.description || "",
+  category: event.category || "Community",
+  province: event.province || "",
+  location: event.location || event.venue || "Philippines",
+  venue: event.venue || "",
+  address: event.address || "",
+  startDate: event.startDate || "",
+  date: event.startDate || "",
+  timeLabel: event.timeLabel || "",
+  time: event.timeLabel || "",
+  imageUrl: event.imageUrl || "",
+  eventUrl: event.eventUrl || "",
+  organizer: event.organizer || event.creatorName || "Community Host",
+  createdBy: event.createdBy || "",
+  creatorName: event.creatorName || "",
+  creatorAvatar: event.creatorAvatar || "",
+  attendeeCount: Number(event.attendeeCount || 0),
+  savedCount: Number(event.savedCount || 0),
+  reactions: Number(event.reactions || 0),
+  source: event.source || "website",
+  status: event.status || "published",
+  rawPayload: event.rawPayload || null,
+  updatedAt: event.updatedAt,
+  createdAt: event.createdAt,
+});
+
+const loadCreatedEvents = async (query = {}) =>
+  CreatedEvent.find(query).sort({ updatedAt: -1, title: 1 }).lean();
 
 router.get("/status", async (req, res) => {
   try {
@@ -41,15 +99,77 @@ router.get("/", async (req, res) => {
   try {
     const location = req.query.location || "All Philippines";
 
-    const events = await getStoredEvents(location);
-    const totalCount = await Event.countDocuments();
+    const [events, createdEvents, totalCount, totalCreatedCount] =
+      await Promise.all([
+        getStoredEvents(location),
+        loadCreatedEvents(buildCreatedEventsQuery({ location })),
+        Event.countDocuments(),
+        CreatedEvent.countDocuments(),
+      ]);
+    const mergedEvents = [
+      ...createdEvents.map((event) => serializeCreatedEvent(event)),
+      ...events,
+    ].sort((leftEvent, rightEvent) => {
+      const leftTime = new Date(
+        leftEvent.updatedAt || leftEvent.createdAt || 0,
+      ).getTime();
+      const rightTime = new Date(
+        rightEvent.updatedAt || rightEvent.createdAt || 0,
+      ).getTime();
+
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+
+      return String(leftEvent.title || "").localeCompare(
+        String(rightEvent.title || ""),
+      );
+    });
 
     res.json({
       success: true,
-      data: events,
-      count: events.length,
-      totalCount,
+      data: mergedEvents,
+      count: mergedEvents.length,
+      totalCount: totalCount + totalCreatedCount,
       source: "database",
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/created/me", protect, async (req, res) => {
+  try {
+    const events = await loadCreatedEvents({ userId: req.user._id });
+
+    res.json({
+      success: true,
+      data: events.map((event) => serializeCreatedEvent(event)),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/created/by/:username", async (req, res) => {
+  try {
+    const username = String(req.params.username || "").trim().toLowerCase();
+
+    if (!username) {
+      return res.status(400).json({ message: "Username is required." });
+    }
+
+    const user = await User.findOne({ username });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const events = await loadCreatedEvents({ userId: user._id });
+
+    res.json({
+      success: true,
+      data: events.map((event) => serializeCreatedEvent(event)),
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -77,20 +197,35 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
       cloudinaryId = result.public_id;
     }
 
-    const newEvent = await SavedEvent.create({
+    const generatedEventId =
+      cloudinaryId || `created-${req.user._id}-${Date.now()}`;
+    const newEvent = await CreatedEvent.create({
       userId: req.user._id,
+      createdBy: req.user.username || "",
+      creatorName: req.user.name || "",
+      creatorAvatar: req.user.avatar || "",
       title: req.body.title,
+      province: req.body.province || "",
       location: req.body.location || req.body.venue || req.body.province,
-      date: req.body.date,
-      time: req.body.time || "",
+      venue: req.body.venue || "",
+      address: req.body.address || "",
+      startDate: req.body.date || req.body.startDate || "",
+      timeLabel: req.body.time || req.body.timeLabel || "",
       category: req.body.category || "Community",
       description: req.body.description || "",
       eventUrl: req.body.eventUrl || "",
       imageUrl: imageUrl || req.body.imageUrl || "",
-      eventId: cloudinaryId || `custom-${Date.now()}`,
+      eventId: generatedEventId,
+      organizer: req.body.organizer || req.user.name || "Community Host",
+      source: "website",
+      status: "published",
+      rawPayload: req.body,
     });
 
-    res.status(201).json({ success: true, data: newEvent });
+    res.status(201).json({
+      success: true,
+      data: serializeCreatedEvent(newEvent.toObject()),
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

@@ -44,22 +44,33 @@ export const normalizeInterestList = (values) => {
     .filter(Boolean);
 };
 
-export const serializeUser = (user) => {
+const getBaseSerializedUser = (user) => ({
+  id: String(user._id),
+  name: user.name || getDefaultName(user.email),
+  username: user.username || getDefaultUsername(user.email),
+  avatar: user.avatar || "",
+  profilePic: user.avatar || "",
+  location: user.location || "Philippines",
+  bio: user.bio || "",
+  createdAt: user.createdAt,
+});
+
+export const serializePublicUser = (user, stats = {}) => ({
+  ...getBaseSerializedUser(user),
+  createdEventsCount: Number(stats.createdEventsCount || 0),
+});
+
+export const serializeUser = (user, stats = {}) => {
   const interests = normalizeInterestList(user.interests);
   const hasCompletedOnboarding = interests.length > 0;
 
   return {
-    id: String(user._id),
-    name: user.name || getDefaultName(user.email),
-    username: user.username || getDefaultUsername(user.email),
+    ...getBaseSerializedUser(user),
     email: user.email,
     provider: user.provider,
-    avatar: user.avatar || "",
-    profilePic: user.avatar || "",
     phone: user.phone || "",
-    bio: user.bio || "",
     interests,
-    createdAt: user.createdAt,
+    createdEventsCount: Number(stats.createdEventsCount || 0),
     needsInterestsSelection: !hasCompletedOnboarding,
     hasCompletedOnboarding,
   };
