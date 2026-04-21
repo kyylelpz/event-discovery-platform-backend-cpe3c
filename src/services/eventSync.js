@@ -208,6 +208,21 @@ const collectImageCandidates = (value) => {
   return [];
 };
 
+const invalidEventImagePatterns = [
+  /googleapis\.com\/maps/i,
+  /maps\.google/i,
+  /staticmap/i,
+  /maps\.gstatic/i,
+  /gstatic\.com\/map/i,
+  /streetview/i,
+  /encrypted-tbn/i,
+  /placehold/i,
+];
+
+const isUsableEventImage = (imageUrl) =>
+  Boolean(imageUrl) &&
+  !invalidEventImagePatterns.some((pattern) => pattern.test(imageUrl));
+
 const updateNumericSearchParams = (searchParams, keys, nextValue) => {
   let updated = false;
 
@@ -371,11 +386,17 @@ const getImageUrl = (event) => {
     ),
   );
 
-  if (!candidates.length) {
+  const usableCandidates = candidates.filter((candidate) =>
+    isUsableEventImage(candidate),
+  );
+
+  if (!usableCandidates.length) {
     return "";
   }
 
-  return candidates.sort((left, right) => getImageCandidateScore(right) - getImageCandidateScore(left))[0];
+  return usableCandidates.sort(
+    (left, right) => getImageCandidateScore(right) - getImageCandidateScore(left),
+  )[0];
 };
 
 const inferCategory = (event) => {
