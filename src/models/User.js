@@ -4,6 +4,13 @@ import { userDB } from "../routes/db.js";
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, trim: true },
+    username: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      unique: true,
+      sparse: true,
+    },
     email: {
       type: String,
       required: true,
@@ -32,12 +39,29 @@ const userSchema = new mongoose.Schema(
     },
 
     avatar: String,
+    phone: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    bio: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    interests: {
+      type: [String],
+      default: [],
+    },
     isEmailVerified: {
       type: Boolean,
       default: false 
     }
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    collection: "users",
+  }
 );
 
 
