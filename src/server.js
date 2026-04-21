@@ -9,6 +9,7 @@ import "./routes/db.js";
 
 import authRoutes from "./routes/auth.js";
 import eventRoutes from "./routes/events.js";
+import profileRoutes from "./routes/profile.js";
 
 const app = express();
 const allowedOrigins = [
@@ -39,6 +40,7 @@ app.use(passport.initialize());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/events", eventRoutes);
+app.use("/api/profile", profileRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "Backend running" });
