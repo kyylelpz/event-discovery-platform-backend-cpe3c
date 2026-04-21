@@ -1,9 +1,19 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
+const readBearerToken = (authorizationHeader = "") => {
+  const [scheme, token] = String(authorizationHeader || "").trim().split(/\s+/, 2);
+
+  if (scheme?.toLowerCase() !== "bearer" || !token) {
+    return "";
+  }
+
+  return token;
+};
+
 const protect = async (req, res, next) => {
   try {
-    const token = req.cookies.token;
+    const token = req.cookies.token || readBearerToken(req.get("authorization"));
 
     if (!token) {
       return res
