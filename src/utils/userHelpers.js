@@ -44,16 +44,23 @@ export const normalizeInterestList = (values) => {
     .filter(Boolean);
 };
 
-export const serializeUser = (user) => ({
-  id: String(user._id),
-  name: user.name || getDefaultName(user.email),
-  username: user.username || getDefaultUsername(user.email),
-  email: user.email,
-  provider: user.provider,
-  avatar: user.avatar || "",
-  profilePic: user.avatar || "",
-  phone: user.phone || "",
-  bio: user.bio || "",
-  interests: normalizeInterestList(user.interests),
-  createdAt: user.createdAt,
-});
+export const serializeUser = (user) => {
+  const interests = normalizeInterestList(user.interests);
+  const hasCompletedOnboarding = interests.length > 0;
+
+  return {
+    id: String(user._id),
+    name: user.name || getDefaultName(user.email),
+    username: user.username || getDefaultUsername(user.email),
+    email: user.email,
+    provider: user.provider,
+    avatar: user.avatar || "",
+    profilePic: user.avatar || "",
+    phone: user.phone || "",
+    bio: user.bio || "",
+    interests,
+    createdAt: user.createdAt,
+    needsInterestsSelection: !hasCompletedOnboarding,
+    hasCompletedOnboarding,
+  };
+};
