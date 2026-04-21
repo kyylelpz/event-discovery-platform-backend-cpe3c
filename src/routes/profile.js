@@ -1,18 +1,38 @@
 import express from "express";
+import CreatedEvent from "../models/CreatedEvent.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
 import {
   normalizeInterestList,
+  serializePublicUser,
   serializeUser,
 } from "../utils/userHelpers.js";
 
 const router = express.Router();
 
-router.get("/", protect, async (req, res) => {
-  res.json({ user: serializeUser(req.user) });
-});
+const getCreatedEventsCount = async (userId) =>
+  CreatedEvent.countDocuments({ userId });
 
-router.put("/", protect, async (req, res) => {
+const findUserByUsername = async (username) =>
+  User.findOne({
+    username: String(username || "").trim().toLowerCase(),
+  });
+
+const sendCurrentProfile = async (req, res) => {
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  const createdEventsCount = await getCreatedEventsCount(user._id);
+
+  res.json({
+    user: serializeUser(user, { createdEventsCount }),
+  });
+};
+
+const updateCurrentProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
 
@@ -41,6 +61,10 @@ router.put("/", protect, async (req, res) => {
       }
     }
 
+    if (typeof req.body.location === "string") {
+      user.location = req.body.location.trim() || "Philippines";
+    }
+
     if (typeof req.body.phone === "string") {
       user.phone = req.body.phone.trim();
     }
@@ -62,14 +86,40 @@ router.put("/", protect, async (req, res) => {
     }
 
     await user.save();
+    const createdEventsCount = await getCreatedEventsCount(user._id);
 
     res.json({
       message: "Profile updated successfully.",
-      user: serializeUser(user),
+      user: serializeUser(user, { createdEventsCount }),
     });
   } catch (error) {
     console.error("Profile update error:", error);
     res.status(500).json({ message: "Server error while updating profile." });
+  }
+};
+
+router.get("/", protect, sendCurrentProfile);
+router.get("/me", protect, sendCurrentProfile);
+
+router.put("/", protect, updateCurrentProfile);
+router.put("/me", protect, updateCurrentProfile);
+
+router.get("/:username", async (req, res) => {
+  try {
+    const user = await findUserByUsername(req.params.username);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const createdEventsCount = await getCreatedEventsCount(user._id);
+
+    res.json({
+      user: serializePublicUser(user, { createdEventsCount }),
+    });
+  } catch (error) {
+    console.error("Public profile fetch error:", error);
+    res.status(500).json({ message: "Server error while loading profile." });
   }
 });
 
