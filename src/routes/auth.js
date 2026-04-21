@@ -22,6 +22,7 @@ dotenv.config();
 
 const router = express.Router();
 const isProduction = process.env.NODE_ENV === "production";
+const clientAppUrl = process.env.CLIENT_URL || "http://localhost:5173";
 
 const buildCookieOptions = () => {
   const options = {
@@ -125,7 +126,7 @@ router.get(
   (req, res) => {
     attachAuthCookie(res, req.user._id);
     res.redirect(
-      process.env.AUTH_SUCCESS_REDIRECT_URL || `${process.env.CLIENT_URL}/events`,
+      process.env.AUTH_SUCCESS_REDIRECT_URL || `${clientAppUrl}/events`,
     );
   },
 );

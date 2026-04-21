@@ -12,20 +12,33 @@ import eventRoutes from "./routes/events.js";
 import profileRoutes from "./routes/profile.js";
 
 const app = express();
+const isProduction = process.env.NODE_ENV === "production";
 const allowedOrigins = [
   process.env.CLIENT_URL,
-  ...(process.env.CLIENT_URLS || "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean),
-];
+  ...(process.env.CLIENT_URLS || "").split(","),
+]
+  .map((origin) => origin?.trim())
+  .filter(Boolean);
+
+const isLocalDevelopmentOrigin = (origin) => {
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === "localhost" || hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+};
 
 app.set("trust proxy", 1);
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        (!isProduction && isLocalDevelopmentOrigin(origin))
+      ) {
         return callback(null, true);
       }
 
