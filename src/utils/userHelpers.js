@@ -1,14 +1,20 @@
 const SIGNUP_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.com$/i;
+const USERNAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+
+export const normalizeUsername = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
 export const getDefaultName = (email) => normalizeEmail(email).split("@")[0] || "Eventcinity user";
 
 export const getDefaultUsername = (email) =>
-  getDefaultName(email)
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase();
+  normalizeUsername(getDefaultName(email)) || "eventcinity-user";
 
 export const getSignupEmailError = (email) => {
   const normalizedEmail = normalizeEmail(email);
@@ -19,6 +25,28 @@ export const getSignupEmailError = (email) => {
 
   if (!SIGNUP_EMAIL_PATTERN.test(normalizedEmail)) {
     return "Use a valid email address that includes @ and ends in .com.";
+  }
+
+  return "";
+};
+
+export const getUsernameValidationError = (username) => {
+  const normalizedUsername = normalizeUsername(username);
+
+  if (!normalizedUsername) {
+    return "Username is required.";
+  }
+
+  if (normalizedUsername.length < 3) {
+    return "Username must be at least 3 characters long.";
+  }
+
+  if (normalizedUsername.length > 30) {
+    return "Username can be at most 30 characters long.";
+  }
+
+  if (!USERNAME_PATTERN.test(normalizedUsername)) {
+    return "Use lowercase letters, numbers, and single hyphens only.";
   }
 
   return "";
@@ -51,12 +79,15 @@ const getBaseSerializedUser = (user) => ({
   avatar: user.avatar || "",
   profilePic: user.avatar || "",
   location: user.location || "Philippines",
+  phone: user.phone || "",
   bio: user.bio || "",
   createdAt: user.createdAt,
 });
 
 export const serializePublicUser = (user, stats = {}) => ({
   ...getBaseSerializedUser(user),
+  contact: user.phone || "",
+  interests: normalizeInterestList(user.interests),
   createdEventsCount: Number(stats.createdEventsCount || 0),
 });
 

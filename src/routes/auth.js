@@ -22,7 +22,134 @@ dotenv.config();
 
 const router = express.Router();
 const isProduction = process.env.NODE_ENV === "production";
-const clientAppUrl = process.env.CLIENT_URL || "http://localhost:5173";
+const DEFAULT_AUTH_SUCCESS_PATH = "/events";
+const DEFAULT_AUTH_FAILURE_PATH = "/signin";
+
+const normalizeOrigin = (value) => {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
+};
+
+const getConfiguredClientOrigins = () =>
+  [
+    process.env.CLIENT_URL,
+    ...(process.env.CLIENT_URLS || "").split(","),
+  ]
+    .map((origin) => normalizeOrigin(origin?.trim()))
+    .filter(Boolean);
+
+const isAllowedClientOrigin = (origin) => {
+  const configuredOrigins = getConfiguredClientOrigins();
+
+  if (!origin) {
+    return false;
+  }
+
+  return configuredOrigins.length === 0 || configuredOrigins.includes(origin);
+};
+
+const getOriginFromHeader = (req, headerName) => {
+  const headerValue = req.get(headerName);
+  return normalizeOrigin(headerValue);
+};
+
+const normalizeClientPath = (value, fallbackPath) => {
+  const candidate = String(value || "").trim();
+
+  if (!candidate) {
+    return fallbackPath;
+  }
+
+  if (/^https?:\/\//i.test(candidate)) {
+    return candidate;
+  }
+
+  return candidate.startsWith("/")
+    ? candidate
+    : `/${candidate.replace(/^\/+/, "")}`;
+};
+
+const buildClientRedirectUrl = (origin, value, fallbackPath) => {
+  const target = normalizeClientPath(value, fallbackPath);
+
+  if (/^https?:\/\//i.test(target)) {
+    return target;
+  }
+
+  return origin ? new URL(target, `${origin}/`).toString() : target;
+};
+
+const encodeAuthState = (payload) =>
+  Buffer.from(JSON.stringify(payload || {}), "utf8").toString("base64url");
+
+const decodeAuthState = (value) => {
+  try {
+    return JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+};
+
+const getFallbackClientOrigin = (req) => {
+  const configuredOrigin = getConfiguredClientOrigins()[0];
+
+  if (configuredOrigin) {
+    return configuredOrigin;
+  }
+
+  const requestOrigin = getOriginFromHeader(req, "origin");
+
+  if (isAllowedClientOrigin(requestOrigin)) {
+    return requestOrigin;
+  }
+
+  const refererOrigin = getOriginFromHeader(req, "referer");
+
+  if (isAllowedClientOrigin(refererOrigin)) {
+    return refererOrigin;
+  }
+
+  return "";
+};
+
+const getStateRedirectUrl = (req) => {
+  const redirectTo = decodeAuthState(req.query.state)?.redirectTo;
+
+  if (!redirectTo) {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(redirectTo);
+    return isAllowedClientOrigin(parsedUrl.origin) ? parsedUrl.toString() : "";
+  } catch {
+    return "";
+  }
+};
+
+const resolveSuccessRedirectUrl = (req) => {
+  const stateRedirectUrl = getStateRedirectUrl(req);
+
+  if (stateRedirectUrl) {
+    return stateRedirectUrl;
+  }
+
+  return buildClientRedirectUrl(
+    getFallbackClientOrigin(req),
+    process.env.AUTH_SUCCESS_REDIRECT_URL,
+    DEFAULT_AUTH_SUCCESS_PATH,
+  );
+};
+
+const resolveFailureRedirectUrl = (req) =>
+  buildClientRedirectUrl(
+    getFallbackClientOrigin(req),
+    process.env.AUTH_FAILURE_REDIRECT_URL,
+    DEFAULT_AUTH_FAILURE_PATH,
+  );
 
 const buildCookieOptions = () => {
   const options = {
@@ -112,24 +239,55 @@ passport.use(
 
 router.get(
   "/google",
-  passport.authenticate("google", {
-    scope: ["profile", "email"],
-    session: false,
-  }),
+  (req, res, next) => {
+    const requestedRedirectTo = String(req.query.redirectTo || "").trim();
+    let redirectTo = "";
+
+    if (requestedRedirectTo) {
+      try {
+        const parsedRedirectUrl = new URL(requestedRedirectTo);
+
+        if (isAllowedClientOrigin(parsedRedirectUrl.origin)) {
+          redirectTo = parsedRedirectUrl.toString();
+        }
+      } catch {
+        redirectTo = "";
+      }
+    }
+
+    if (!redirectTo) {
+      redirectTo = resolveSuccessRedirectUrl(req);
+    }
+
+    passport.authenticate("google", {
+      scope: ["profile", "email"],
+      session: false,
+      state: encodeAuthState({ redirectTo }),
+    })(req, res, next);
+  },
 );
 
 router.get(
   "/google/callback",
-  passport.authenticate("google", {
-    session: false,
-    failureRedirect: "/login",
-  }),
+  (req, res, next) => {
+    passport.authenticate("google", { session: false }, (error, user) => {
+      if (error) {
+        console.error("Google authentication error:", error);
+        return res.redirect(resolveFailureRedirectUrl(req));
+      }
+
+      if (!user) {
+        return res.redirect(resolveFailureRedirectUrl(req));
+      }
+
+      req.user = user;
+      return next();
+    })(req, res, next);
+  },
   (req, res) => {
     const token = createAuthToken(req.user._id);
     attachAuthCookie(res, token);
-    res.redirect(
-      process.env.AUTH_SUCCESS_REDIRECT_URL || `${clientAppUrl}/events`,
-    );
+    res.redirect(resolveSuccessRedirectUrl(req));
   },
 );
 
@@ -156,7 +314,7 @@ router.post("/register", async (req, res) => {
     const newUser = new User({
       email,
       password: hashPassword(password),
-      name: getDefaultName(email),
+      name: String(req.body.name || "").trim() || getDefaultName(email),
       username: await createUniqueUsername(email),
       provider: "local",
     });

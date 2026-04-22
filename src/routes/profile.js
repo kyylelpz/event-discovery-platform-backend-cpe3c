@@ -3,6 +3,8 @@ import CreatedEvent from "../models/CreatedEvent.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
 import {
+  getUsernameValidationError,
+  normalizeUsername,
   normalizeInterestList,
   serializePublicUser,
   serializeUser,
@@ -45,7 +47,12 @@ const updateCurrentProfile = async (req, res) => {
     }
 
     if (typeof req.body.username === "string") {
-      const nextUsername = req.body.username.trim().toLowerCase();
+      const nextUsername = normalizeUsername(req.body.username);
+      const usernameError = getUsernameValidationError(nextUsername);
+
+      if (usernameError) {
+        return res.status(400).json({ message: usernameError });
+      }
 
       if (nextUsername && nextUsername !== user.username) {
         const existingUser = await User.findOne({
@@ -67,6 +74,10 @@ const updateCurrentProfile = async (req, res) => {
 
     if (typeof req.body.phone === "string") {
       user.phone = req.body.phone.trim();
+    }
+
+    if (typeof req.body.contact === "string") {
+      user.phone = req.body.contact.trim();
     }
 
     if (typeof req.body.bio === "string") {
