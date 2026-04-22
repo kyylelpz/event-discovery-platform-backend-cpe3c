@@ -291,11 +291,34 @@ const invalidEventImagePatterns = [
   /streetview/i,
   /encrypted-tbn/i,
   /placehold/i,
+  /\.(?:css|js|json)(?:[?#]|$)/i,
+  /parastorage\.com\/pages\/pages\/thunderbolt/i,
+  /bundle\.min\.(?:js|css)/i,
 ];
 
 const isUsableEventImage = (imageUrl) =>
   Boolean(imageUrl) &&
   !invalidEventImagePatterns.some((pattern) => pattern.test(imageUrl));
+
+const isLikelyImageUrl = (imageUrl) => {
+  if (!isUsableEventImage(imageUrl)) {
+    return false;
+  }
+
+  if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(imageUrl)) {
+    return true;
+  }
+
+  if (
+    /(?:[?&](?:url|image|img|src)=|\/_next\/image\b|\/images?\b|\/media\b|\/photo\b|\/poster\b|\/banner\b|\/hero\b)/i.test(
+      imageUrl,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+};
 
 const resolveAbsoluteUrl = (value, baseUrl = "") => {
   const normalizedValue = asText(value);
@@ -420,7 +443,7 @@ const extractSourceImageCandidates = (html, baseUrl) => {
   return dedupeValues(
     candidates
       .map((candidate) => optimizeImageUrl(candidate))
-      .filter((candidate) => isUsableEventImage(candidate)),
+      .filter((candidate) => isLikelyImageUrl(candidate)),
   );
 };
 
