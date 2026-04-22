@@ -1,6 +1,7 @@
 import express from "express";
 import protect from "../middleware/protect.js";
 import UserEventInteraction from "../models/UserEventInteraction.js";
+import User from "../models/User.js";
 
 const router = express.Router();
 
@@ -76,6 +77,39 @@ router.get("/", protect, async (req, res) => {
   } catch (error) {
     console.error("Interaction fetch error:", error);
     res.status(500).json({ message: "Server error while loading interactions." });
+  }
+});
+
+router.get("/public/:username/attending", async (req, res) => {
+  try {
+    const username = String(req.params.username || "").trim().toLowerCase();
+
+    if (!username) {
+      return res.status(400).json({ message: "Username is required." });
+    }
+
+    const user = await User.findOne({ username });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const records = await UserEventInteraction.find({
+      userId: user._id,
+      attending: true,
+    }).sort({
+      updatedAt: -1,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        records: records.map((record) => serializeInteraction(record)),
+      },
+    });
+  } catch (error) {
+    console.error("Public attending interactions fetch error:", error);
+    res.status(500).json({ message: "Server error while loading attending events." });
   }
 });
 
