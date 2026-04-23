@@ -1,0 +1,141 @@
+import mongoose from "mongoose";
+import { eventDB } from "../routes/db.js";
+
+const mockEventSchema = new mongoose.Schema(
+  {
+    eventId: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+      trim: true,
+    },
+    hostUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      index: true,
+    },
+    hostUsername: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
+    hostName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    hostAvatar: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    description: {
+      type: String,
+      default: "",
+    },
+    category: {
+      type: String,
+      default: "Community",
+    },
+    province: {
+      type: String,
+      default: "",
+    },
+    location: {
+      type: String,
+      default: "Philippines",
+    },
+    venue: {
+      type: String,
+      default: "",
+    },
+    address: {
+      type: String,
+      default: "",
+    },
+    venueGoogleMapsUrl: {
+      type: String,
+      default: "",
+    },
+    venuePlaceId: {
+      type: String,
+      default: "",
+    },
+    venueRating: {
+      type: Number,
+      default: 0,
+    },
+    venueReviewCount: {
+      type: Number,
+      default: 0,
+    },
+    venueCoordinates: {
+      lat: {
+        type: Number,
+        default: null,
+      },
+      lng: {
+        type: Number,
+        default: null,
+      },
+    },
+    startDate: {
+      type: String,
+      default: "",
+    },
+    timeLabel: {
+      type: String,
+      default: "",
+    },
+    imageUrl: {
+      type: String,
+      default: "",
+    },
+    eventUrl: {
+      type: String,
+      default: "",
+    },
+    organizer: {
+      type: String,
+      default: "",
+    },
+    attendeeCount: {
+      type: Number,
+      default: 0,
+    },
+    savedCount: {
+      type: Number,
+      default: 0,
+    },
+    reactions: {
+      type: Number,
+      default: 0,
+    },
+    source: {
+      type: String,
+      default: "mock",
+    },
+    status: {
+      type: String,
+      default: "published",
+    },
+    rawPayload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+    collection: "mock_events",
+  },
+);
+
+export default eventDB.models.MockEvent || eventDB.model("MockEvent", mockEventSchema);

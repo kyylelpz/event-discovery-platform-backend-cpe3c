@@ -1,5 +1,7 @@
 import express from "express";
 import CreatedEvent from "../models/CreatedEvent.js";
+import MockEvent from "../models/MockEvent.js";
+import MockUser from "../models/MockUser.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
 import {
@@ -13,8 +15,14 @@ import { cloudinary, upload } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
-const getCreatedEventsCount = async (userId) =>
-  CreatedEvent.countDocuments({ userId });
+const getCreatedEventsCount = async (userId) => {
+  const [createdCount, mockCount] = await Promise.all([
+    CreatedEvent.countDocuments({ userId }),
+    MockEvent.countDocuments({ hostUserId: userId }),
+  ]);
+
+  return createdCount + mockCount;
+};
 
 const buildConnectionStats = (user) => ({
   followersCount: Array.isArray(user?.followers) ? user.followers.length : 0,
@@ -82,12 +90,15 @@ const updateCurrentProfile = async (req, res) => {
       }
 
       if (nextUsername && nextUsername !== user.username) {
-        const existingUser = await User.findOne({
-          username: nextUsername,
-          _id: { $ne: user._id },
-        });
+        const [existingUser, existingMockUser] = await Promise.all([
+          User.findOne({
+            username: nextUsername,
+            _id: { $ne: user._id },
+          }),
+          MockUser.findOne({ username: nextUsername }),
+        ]);
 
-        if (existingUser) {
+        if (existingUser || existingMockUser) {
           return res.status(400).json({ message: "That username is already in use." });
         }
 
@@ -171,19 +182,36 @@ router.put("/me", protect, upload.single("avatar"), updateCurrentProfile);
 
 router.get("/:username", async (req, res) => {
   try {
-    const user = await findUserByUsername(req.params.username);
+    const normalizedUsername = String(req.params.username || "").trim().toLowerCase();
+    const [user, mockUser] = await Promise.all([
+      findUserByUsername(normalizedUsername),
+      MockUser.findOne({ username: normalizedUsername }),
+    ]);
 
-    if (!user) {
+    if (!user && !mockUser) {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const createdEventsCount = await getCreatedEventsCount(user._id);
+    if (user) {
+      const createdEventsCount = await getCreatedEventsCount(user._id);
 
-    res.json({
-      user: serializePublicUser(user, {
+      return res.json({
+        user: serializePublicUser(user, {
+          createdEventsCount,
+          followersCount: user.followers?.length || 0,
+          followingCount: user.following?.length || 0,
+        }),
+      });
+    }
+
+    const createdEventsCount = await MockEvent.countDocuments({ hostUserId: mockUser._id });
+
+    return res.json({
+      user: serializePublicUser(mockUser, {
         createdEventsCount,
-        followersCount: user.followers?.length || 0,
-        followingCount: user.following?.length || 0,
+        followersCount: 0,
+        followingCount: 0,
+        isMock: true,
       }),
     });
   } catch (error) {
