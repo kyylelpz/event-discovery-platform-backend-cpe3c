@@ -11,8 +11,7 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "dev:watch": "node --watch src/server.js",
-    "dev:nodemon": "nodemon src/server.js",
-    "seed:mock": "node scripts/seedMockCatalog.js"
+    "dev:nodemon": "nodemon src/server.js"
   },
   "dependencies": {
     "axios": "^1.15.1",
