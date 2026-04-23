@@ -18,6 +18,7 @@ import {
   passwordNeedsMigration,
   verifyPassword,
 } from "../utils/password.js";
+import { sendVerificationEmail } from "../services/email.js";
 
 dotenv.config();
 
@@ -179,6 +180,20 @@ const createEmailVerificationCode = () =>
 
 const buildEmailVerificationExpiry = () =>
   new Date(Date.now() + EMAIL_VERIFICATION_LIFETIME_MS);
+
+const issueVerificationCode = async (user) => {
+  const nextCode = createEmailVerificationCode();
+  const nextExpiry = buildEmailVerificationExpiry();
+
+  await sendVerificationEmail({
+    email: user.email,
+    name: user.name || getDefaultName(user.email),
+    code: nextCode,
+  });
+
+  user.emailVerificationCode = nextCode;
+  user.emailVerificationExpiresAt = nextExpiry;
+};
 
 const attachAuthCookie = (res, token) => {
   res.cookie("token", token, buildCookieOptions());
@@ -352,21 +367,26 @@ router.post("/register", async (req, res) => {
       username: await createUniqueUsername(email),
       provider: "local",
       isEmailVerified: false,
-      emailVerificationCode: createEmailVerificationCode(),
-      emailVerificationExpiresAt: buildEmailVerificationExpiry(),
+      emailVerificationCode: "",
+      emailVerificationExpiresAt: null,
     });
 
+    await issueVerificationCode(newUser);
     await newUser.save();
 
     res.status(201).json({
-      message: "Account created. Verify your email to continue.",
+      message: "Account created. A verification email was sent.",
       verificationRequired: true,
       email,
-      verificationPreviewCode: newUser.emailVerificationCode,
     });
   } catch (error) {
     console.error("Database Error:", error);
-    res.status(500).json({ message: "Server error while saving." });
+    res.status(500).json({
+      message:
+        error.message === "Email delivery provider is not configured."
+          ? "Email verification is not configured on the server yet."
+          : "Server error while saving.",
+    });
   }
 });
 
@@ -387,16 +407,14 @@ router.post("/login", async (req, res) => {
     }
 
     if (user.provider === "local" && !user.isEmailVerified) {
-      user.emailVerificationCode = createEmailVerificationCode();
-      user.emailVerificationExpiresAt = buildEmailVerificationExpiry();
+      await issueVerificationCode(user);
       await user.save();
 
       return res.status(403).json({
-        message: "Verify your email before signing in.",
+        message: "Verify your email before signing in. A fresh verification email was sent.",
         code: "EMAIL_VERIFICATION_REQUIRED",
         verificationRequired: true,
         email: user.email,
-        verificationPreviewCode: user.emailVerificationCode,
       });
     }
 
@@ -459,14 +477,12 @@ router.post("/verify-email", async (req, res) => {
       !user.emailVerificationExpiresAt ||
       user.emailVerificationExpiresAt.getTime() < Date.now()
     ) {
-      user.emailVerificationCode = createEmailVerificationCode();
-      user.emailVerificationExpiresAt = buildEmailVerificationExpiry();
+      await issueVerificationCode(user);
       await user.save();
 
       return res.status(400).json({
-        message: "That verification code expired. We generated a new one.",
+        message: "That verification code expired. We sent a new verification email.",
         code: "EMAIL_VERIFICATION_EXPIRED",
-        verificationPreviewCode: user.emailVerificationCode,
       });
     }
 
@@ -509,19 +525,22 @@ router.post("/verify-email/resend", async (req, res) => {
       return res.status(200).json({ message: "Email already verified." });
     }
 
-    user.emailVerificationCode = createEmailVerificationCode();
-    user.emailVerificationExpiresAt = buildEmailVerificationExpiry();
+    await issueVerificationCode(user);
     await user.save();
 
     res.status(200).json({
-      message: "A new verification code is ready.",
+      message: "A new verification email was sent.",
       verificationRequired: true,
       email: user.email,
-      verificationPreviewCode: user.emailVerificationCode,
     });
   } catch (error) {
     console.error("Email verification resend error:", error);
-    res.status(500).json({ message: "Server error while resending the verification code." });
+    res.status(500).json({
+      message:
+        error.message === "Email delivery provider is not configured."
+          ? "Email verification is not configured on the server yet."
+          : "Server error while resending the verification code.",
+    });
   }
 });
 
