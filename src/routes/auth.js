@@ -381,12 +381,9 @@ router.post("/register", async (req, res) => {
     });
   } catch (error) {
     console.error("Database Error:", error);
-    res.status(500).json({
-      message:
-        error.message === "Email delivery provider is not configured."
-          ? "Email verification is not configured on the server yet."
-          : "Server error while saving.",
-    });
+      res.status(500).json({
+        message: "Server error while creating the account.",
+      });
   }
 });
 
@@ -535,12 +532,9 @@ router.post("/verify-email/resend", async (req, res) => {
     });
   } catch (error) {
     console.error("Email verification resend error:", error);
-    res.status(500).json({
-      message:
-        error.message === "Email delivery provider is not configured."
-          ? "Email verification is not configured on the server yet."
-          : "Server error while resending the verification code.",
-    });
+      res.status(500).json({
+        message: "Server error while resending the verification code.",
+      });
   }
 });
 
