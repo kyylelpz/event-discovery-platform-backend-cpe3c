@@ -2,6 +2,7 @@ import express from "express";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import dotenv from "dotenv";
 import User from "../models/User.js";
 import protect from "../middleware/protect.js";
@@ -24,6 +25,7 @@ const router = express.Router();
 const isProduction = process.env.NODE_ENV === "production";
 const DEFAULT_AUTH_SUCCESS_PATH = "/events";
 const DEFAULT_AUTH_FAILURE_PATH = "/signin";
+const EMAIL_VERIFICATION_LIFETIME_MS = 15 * 60 * 1000;
 
 const normalizeOrigin = (value) => {
   try {
@@ -172,8 +174,31 @@ const createAuthToken = (userId) =>
     expiresIn: "7d",
   });
 
+const createEmailVerificationCode = () =>
+  String(crypto.randomInt(100000, 1000000));
+
+const buildEmailVerificationExpiry = () =>
+  new Date(Date.now() + EMAIL_VERIFICATION_LIFETIME_MS);
+
 const attachAuthCookie = (res, token) => {
   res.cookie("token", token, buildCookieOptions());
+};
+
+const serializeRedirectPayload = (value) =>
+  Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64url");
+
+const buildAuthRedirectUrl = (redirectTo, payload = {}) => {
+  try {
+    const redirectUrl = new URL(redirectTo);
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value) {
+        redirectUrl.searchParams.set(key, String(value));
+      }
+    });
+    return redirectUrl.toString();
+  } catch {
+    return redirectTo;
+  }
 };
 
 const createUniqueUsername = async (email, excludeUserId = null) => {
@@ -214,6 +239,9 @@ passport.use(
         if (user) {
           user.googleId = profile.id;
           user.provider = "google";
+          user.isEmailVerified = true;
+          user.emailVerificationCode = "";
+          user.emailVerificationExpiresAt = null;
           user.name = user.name || profile.displayName || getDefaultName(email);
           user.avatar = user.avatar || avatar;
           user.username = user.username || (await createUniqueUsername(email, user._id));
@@ -226,6 +254,7 @@ passport.use(
             email,
             provider: "google",
             avatar,
+            isEmailVerified: true,
           });
         }
 
@@ -287,7 +316,12 @@ router.get(
   (req, res) => {
     const token = createAuthToken(req.user._id);
     attachAuthCookie(res, token);
-    res.redirect(resolveSuccessRedirectUrl(req));
+    const redirectUrl = buildAuthRedirectUrl(resolveSuccessRedirectUrl(req), {
+      authToken: token,
+      authUser: serializeRedirectPayload(serializeUser(req.user)),
+      authProvider: "google",
+    });
+    res.redirect(redirectUrl);
   },
 );
 
@@ -317,16 +351,18 @@ router.post("/register", async (req, res) => {
       name: String(req.body.name || "").trim() || getDefaultName(email),
       username: await createUniqueUsername(email),
       provider: "local",
+      isEmailVerified: false,
+      emailVerificationCode: createEmailVerificationCode(),
+      emailVerificationExpiresAt: buildEmailVerificationExpiry(),
     });
 
     await newUser.save();
-    const token = createAuthToken(newUser._id);
-    attachAuthCookie(res, token);
 
     res.status(201).json({
-      message: "Account created successfully!",
-      token,
-      user: serializeUser(newUser),
+      message: "Account created. Verify your email to continue.",
+      verificationRequired: true,
+      email,
+      verificationPreviewCode: newUser.emailVerificationCode,
     });
   } catch (error) {
     console.error("Database Error:", error);
@@ -347,6 +383,20 @@ router.post("/login", async (req, res) => {
     if (!user.password && user.provider === "google") {
       return res.status(400).json({
         message: "This account uses Google Sign-In. Please continue with Google.",
+      });
+    }
+
+    if (user.provider === "local" && !user.isEmailVerified) {
+      user.emailVerificationCode = createEmailVerificationCode();
+      user.emailVerificationExpiresAt = buildEmailVerificationExpiry();
+      await user.save();
+
+      return res.status(403).json({
+        message: "Verify your email before signing in.",
+        code: "EMAIL_VERIFICATION_REQUIRED",
+        verificationRequired: true,
+        email: user.email,
+        verificationPreviewCode: user.emailVerificationCode,
       });
     }
 
@@ -376,6 +426,102 @@ router.post("/login", async (req, res) => {
   } catch (error) {
     console.error("Database Error during login:", error);
     res.status(500).json({ message: "Server error during login." });
+  }
+});
+
+router.post("/verify-email", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const submittedCode = String(req.body.code || "").trim();
+    const user = await User.findOne({ email });
+
+    if (!user || user.provider !== "local") {
+      return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (user.isEmailVerified) {
+      const token = createAuthToken(user._id);
+      attachAuthCookie(res, token);
+
+      return res.status(200).json({
+        message: "Email already verified.",
+        token,
+        user: serializeUser(user),
+      });
+    }
+
+    if (!submittedCode) {
+      return res.status(400).json({ message: "Verification code is required." });
+    }
+
+    if (
+      !user.emailVerificationCode ||
+      !user.emailVerificationExpiresAt ||
+      user.emailVerificationExpiresAt.getTime() < Date.now()
+    ) {
+      user.emailVerificationCode = createEmailVerificationCode();
+      user.emailVerificationExpiresAt = buildEmailVerificationExpiry();
+      await user.save();
+
+      return res.status(400).json({
+        message: "That verification code expired. We generated a new one.",
+        code: "EMAIL_VERIFICATION_EXPIRED",
+        verificationPreviewCode: user.emailVerificationCode,
+      });
+    }
+
+    if (user.emailVerificationCode !== submittedCode) {
+      return res.status(400).json({ message: "Incorrect verification code." });
+    }
+
+    user.isEmailVerified = true;
+    user.emailVerificationCode = "";
+    user.emailVerificationExpiresAt = null;
+    if (!user.username) {
+      user.username = await createUniqueUsername(user.email, user._id);
+    }
+    await user.save();
+
+    const token = createAuthToken(user._id);
+    attachAuthCookie(res, token);
+
+    res.status(200).json({
+      message: "Email verified successfully.",
+      token,
+      user: serializeUser(user),
+    });
+  } catch (error) {
+    console.error("Email verification error:", error);
+    res.status(500).json({ message: "Server error while verifying email." });
+  }
+});
+
+router.post("/verify-email/resend", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const user = await User.findOne({ email });
+
+    if (!user || user.provider !== "local") {
+      return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(200).json({ message: "Email already verified." });
+    }
+
+    user.emailVerificationCode = createEmailVerificationCode();
+    user.emailVerificationExpiresAt = buildEmailVerificationExpiry();
+    await user.save();
+
+    res.status(200).json({
+      message: "A new verification code is ready.",
+      verificationRequired: true,
+      email: user.email,
+      verificationPreviewCode: user.emailVerificationCode,
+    });
+  } catch (error) {
+    console.error("Email verification resend error:", error);
+    res.status(500).json({ message: "Server error while resending the verification code." });
   }
 });
 
