@@ -89,6 +89,8 @@ export const serializePublicUser = (user, stats = {}) => ({
   contact: user.phone || "",
   interests: normalizeInterestList(user.interests),
   createdEventsCount: Number(stats.createdEventsCount || 0),
+  followersCount: Number(stats.followersCount ?? user.followers?.length ?? 0),
+  followingCount: Number(stats.followingCount ?? user.following?.length ?? 0),
 });
 
 export const serializeUser = (user, stats = {}) => {
@@ -102,6 +104,14 @@ export const serializeUser = (user, stats = {}) => {
     phone: user.phone || "",
     interests,
     createdEventsCount: Number(stats.createdEventsCount || 0),
+    followersCount: Number(stats.followersCount ?? user.followers?.length ?? 0),
+    followingCount: Number(stats.followingCount ?? user.following?.length ?? 0),
+    followerUsernames: Array.isArray(stats.followerUsernames)
+      ? stats.followerUsernames.filter(Boolean)
+      : [],
+    followingUsernames: Array.isArray(stats.followingUsernames)
+      ? stats.followingUsernames.filter(Boolean)
+      : [],
     needsInterestsSelection: !hasCompletedOnboarding,
     hasCompletedOnboarding,
   };

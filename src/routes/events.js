@@ -4,6 +4,7 @@ import CreatedEvent from "../models/CreatedEvent.js";
 import Event from "../models/Event.js";
 import SavedEvent from "../models/SavedEvent.js";
 import User from "../models/User.js";
+import Venue from "../models/Venue.js";
 import {
   getEventCatalogStatus,
   getStoredEvents,
@@ -36,7 +37,72 @@ const buildCreatedEventsQuery = ({ location, userId } = {}) => {
   return query;
 };
 
-const serializeCreatedEvent = (event) => ({
+const normalizeVenueLookupValue = (value) =>
+  String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const buildVenueLookup = (venues = []) => {
+  const lookup = new Map();
+
+  venues.forEach((venue) => {
+    [
+      venue.venue_name,
+      venue.location,
+      venue.google_maps_place_id,
+      venue.google_maps_link,
+    ]
+      .map((value) => normalizeVenueLookupValue(value))
+      .filter(Boolean)
+      .forEach((key) => lookup.set(key, venue));
+  });
+
+  return lookup;
+};
+
+const getVenueMetadata = (venue) => ({
+  venueRating: Number(venue?.rating || 0),
+  venueReviewCount: Number(venue?.reviewCount || 0),
+  venueGoogleMapsUrl: venue?.google_maps_link || "",
+  venuePlaceId: venue?.google_maps_place_id || "",
+  venueCoordinates:
+    venue?.coordinates &&
+    Number.isFinite(Number(venue.coordinates.lat)) &&
+    Number.isFinite(Number(venue.coordinates.lng))
+      ? {
+          lat: Number(venue.coordinates.lat),
+          lng: Number(venue.coordinates.lng),
+        }
+      : null,
+});
+
+const resolveVenueMetadata = (event, venueLookup) => {
+  const candidates = [
+    event?.venue,
+    event?.location,
+    event?.address,
+    event?.venuePlaceId,
+    event?.venueGoogleMapsUrl,
+    event?.rawPayload?.venue?.name,
+    event?.rawPayload?.formatted_address,
+  ];
+
+  for (const candidate of candidates) {
+    const match = venueLookup.get(normalizeVenueLookupValue(candidate));
+
+    if (match) {
+      return getVenueMetadata(match);
+    }
+  }
+
+  return {
+    venueRating: Number(event?.venueRating || 0),
+    venueReviewCount: Number(event?.venueReviewCount || 0),
+    venueGoogleMapsUrl: event?.venueGoogleMapsUrl || "",
+    venuePlaceId: event?.venuePlaceId || "",
+    venueCoordinates: event?.venueCoordinates || null,
+  };
+};
+
+const serializeCreatedEvent = (event, venueMetadata = {}) => ({
   id: String(event._id),
   eventId: event.eventId,
   title: event.title,
@@ -46,6 +112,14 @@ const serializeCreatedEvent = (event) => ({
   location: event.location || event.venue || "Philippines",
   venue: event.venue || "",
   address: event.address || "",
+  venueGoogleMapsUrl:
+    event.venueGoogleMapsUrl || venueMetadata.venueGoogleMapsUrl || "",
+  venuePlaceId: event.venuePlaceId || venueMetadata.venuePlaceId || "",
+  venueRating: Number(event.venueRating || venueMetadata.venueRating || 0),
+  venueReviewCount: Number(
+    event.venueReviewCount || venueMetadata.venueReviewCount || 0,
+  ),
+  venueCoordinates: event.venueCoordinates || venueMetadata.venueCoordinates || null,
   startDate: event.startDate || "",
   date: event.startDate || "",
   timeLabel: event.timeLabel || "",
@@ -99,16 +173,23 @@ router.get("/", async (req, res) => {
   try {
     const location = req.query.location || "All Philippines";
 
-    const [events, createdEvents, totalCount, totalCreatedCount] =
+    const [events, createdEvents, totalCount, totalCreatedCount, venues] =
       await Promise.all([
         getStoredEvents(location),
         loadCreatedEvents(buildCreatedEventsQuery({ location })),
         Event.countDocuments(),
         CreatedEvent.countDocuments(),
+        Venue.find({}).lean(),
       ]);
+    const venueLookup = buildVenueLookup(venues);
     const mergedEvents = [
-      ...createdEvents.map((event) => serializeCreatedEvent(event)),
-      ...events,
+      ...createdEvents.map((event) =>
+        serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
+      ),
+      ...events.map((event) => ({
+        ...event,
+        ...resolveVenueMetadata(event, venueLookup),
+      })),
     ].sort((leftEvent, rightEvent) => {
       const leftTime = new Date(
         leftEvent.updatedAt || leftEvent.createdAt || 0,
@@ -140,11 +221,17 @@ router.get("/", async (req, res) => {
 
 router.get("/created/me", protect, async (req, res) => {
   try {
-    const events = await loadCreatedEvents({ userId: req.user._id });
+    const [events, venues] = await Promise.all([
+      loadCreatedEvents({ userId: req.user._id }),
+      Venue.find({}).lean(),
+    ]);
+    const venueLookup = buildVenueLookup(venues);
 
     res.json({
       success: true,
-      data: events.map((event) => serializeCreatedEvent(event)),
+      data: events.map((event) =>
+        serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
+      ),
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -165,11 +252,17 @@ router.get("/created/by/:username", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const events = await loadCreatedEvents({ userId: user._id });
+    const [events, venues] = await Promise.all([
+      loadCreatedEvents({ userId: user._id }),
+      Venue.find({}).lean(),
+    ]);
+    const venueLookup = buildVenueLookup(venues);
 
     res.json({
       success: true,
-      data: events.map((event) => serializeCreatedEvent(event)),
+      data: events.map((event) =>
+        serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
+      ),
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -197,6 +290,55 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
       cloudinaryId = result.public_id;
     }
 
+    const parsedVenueRating = Number(req.body.venueRating || 0);
+    const parsedVenueReviewCount = Number(req.body.venueReviewCount || 0);
+    const parsedVenueLat = Number(req.body.venueLatitude);
+    const parsedVenueLng = Number(req.body.venueLongitude);
+    const venueName = String(req.body.venue || req.body.location || "").trim();
+    const venueLocation = String(
+      req.body.location || req.body.address || req.body.venue || req.body.province || "",
+    ).trim();
+    const venueGoogleMapsUrl = String(
+      req.body.googleMapsUrl || req.body.venueGoogleMapsUrl || "",
+    ).trim();
+    const venuePlaceId = String(req.body.venuePlaceId || "").trim();
+
+    let storedVenue = null;
+
+    if (venueName) {
+      const venueQuery = venuePlaceId
+        ? { google_maps_place_id: venuePlaceId }
+        : { venue_name: venueName };
+
+      storedVenue = await Venue.findOneAndUpdate(
+        venueQuery,
+        {
+          $set: {
+            venue_name: venueName,
+            location: venueLocation,
+            google_maps_link: venueGoogleMapsUrl,
+            google_maps_place_id: venuePlaceId,
+            rating: Number.isFinite(parsedVenueRating) ? parsedVenueRating : 0,
+            reviewCount: Number.isFinite(parsedVenueReviewCount)
+              ? parsedVenueReviewCount
+              : 0,
+            coordinates:
+              Number.isFinite(parsedVenueLat) && Number.isFinite(parsedVenueLng)
+                ? {
+                    lat: parsedVenueLat,
+                    lng: parsedVenueLng,
+                  }
+                : undefined,
+          },
+        },
+        {
+          new: true,
+          upsert: true,
+          setDefaultsOnInsert: true,
+        },
+      );
+    }
+
     const generatedEventId =
       cloudinaryId || `created-${req.user._id}-${Date.now()}`;
     const newEvent = await CreatedEvent.create({
@@ -206,9 +348,28 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
       creatorAvatar: req.user.avatar || "",
       title: req.body.title,
       province: req.body.province || "",
-      location: req.body.location || req.body.venue || req.body.province,
-      venue: req.body.venue || "",
+      location:
+        req.body.location || req.body.address || req.body.venue || req.body.province,
+      venue: venueName,
       address: req.body.address || "",
+      venueGoogleMapsUrl:
+        venueGoogleMapsUrl || storedVenue?.google_maps_link || "",
+      venuePlaceId: venuePlaceId || storedVenue?.google_maps_place_id || "",
+      venueRating:
+        Number.isFinite(parsedVenueRating) && parsedVenueRating > 0
+          ? parsedVenueRating
+          : Number(storedVenue?.rating || 0),
+      venueReviewCount:
+        Number.isFinite(parsedVenueReviewCount) && parsedVenueReviewCount > 0
+          ? parsedVenueReviewCount
+          : Number(storedVenue?.reviewCount || 0),
+      venueCoordinates:
+        Number.isFinite(parsedVenueLat) && Number.isFinite(parsedVenueLng)
+          ? {
+              lat: parsedVenueLat,
+              lng: parsedVenueLng,
+            }
+          : storedVenue?.coordinates || null,
       startDate: req.body.date || req.body.startDate || "",
       timeLabel: req.body.time || req.body.timeLabel || "",
       category: req.body.category || "Community",
@@ -224,7 +385,7 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
 
     res.status(201).json({
       success: true,
-      data: serializeCreatedEvent(newEvent.toObject()),
+      data: serializeCreatedEvent(newEvent.toObject(), getVenueMetadata(storedVenue)),
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
