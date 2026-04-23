@@ -202,7 +202,7 @@ const parseCreatedEventRequestBody = (body = {}) => {
   const parsedVenueLng = Number(body.venueLongitude);
   const venueName = String(body.venue || body.location || "").trim();
   const venueLocation = String(
-    body.location || body.address || body.venue || body.province || "",
+    body.location || body.venue || body.province || "",
   ).trim();
   const venueGoogleMapsUrl = String(
     body.googleMapsUrl || body.venueGoogleMapsUrl || "",
@@ -293,7 +293,7 @@ const buildCreatedEventUpdate = ({
     province: String(body.province || "").trim(),
     location:
       String(
-        body.location || body.address || body.venue || body.province || "",
+        body.location || body.venue || body.province || "",
       ).trim() || "Philippines",
     venue: venueName,
     address: String(body.address || "").trim(),
