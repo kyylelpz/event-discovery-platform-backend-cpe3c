@@ -18,7 +18,12 @@ import {
   passwordNeedsMigration,
   verifyPassword,
 } from "../utils/password.js";
-import { sendVerificationEmail } from "../services/email.js";
+import {
+  isEmailDeliveryConfigurationError,
+  isEmailDeliveryRequestError,
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from "../services/email.js";
 
 dotenv.config();
 
@@ -27,6 +32,7 @@ const isProduction = process.env.NODE_ENV === "production";
 const DEFAULT_AUTH_SUCCESS_PATH = "/events";
 const DEFAULT_AUTH_FAILURE_PATH = "/signin";
 const EMAIL_VERIFICATION_LIFETIME_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_LIFETIME_MS = 15 * 60 * 1000;
 
 const normalizeOrigin = (value) => {
   try {
@@ -178,8 +184,14 @@ const createAuthToken = (userId) =>
 const createEmailVerificationCode = () =>
   String(crypto.randomInt(100000, 1000000));
 
+const createPasswordResetCode = () =>
+  String(crypto.randomInt(100000, 1000000));
+
 const buildEmailVerificationExpiry = () =>
   new Date(Date.now() + EMAIL_VERIFICATION_LIFETIME_MS);
+
+const buildPasswordResetExpiry = () =>
+  new Date(Date.now() + PASSWORD_RESET_LIFETIME_MS);
 
 const issueVerificationCode = async (user) => {
   const nextCode = createEmailVerificationCode();
@@ -195,9 +207,45 @@ const issueVerificationCode = async (user) => {
   user.emailVerificationExpiresAt = nextExpiry;
 };
 
+const issuePasswordResetCode = async (user) => {
+  const nextCode = createPasswordResetCode();
+  const nextExpiry = buildPasswordResetExpiry();
+
+  await sendPasswordResetEmail({
+    email: user.email,
+    name: user.name || getDefaultName(user.email),
+    code: nextCode,
+  });
+
+  user.passwordResetCode = nextCode;
+  user.passwordResetExpiresAt = nextExpiry;
+};
+
+const trySendEmailFailureResponse = (res, error) => {
+  if (isEmailDeliveryConfigurationError(error)) {
+    res.status(503).json({
+      message:
+        "Account email delivery is not configured on the server yet. Set the email provider API key and verify noreply@eventcinity.com with that provider.",
+    });
+    return true;
+  }
+
+  if (isEmailDeliveryRequestError(error)) {
+    res.status(502).json({
+      message:
+        "Unable to send the account email right now. Please try again after checking the email provider configuration and domain verification.",
+    });
+    return true;
+  }
+
+  return false;
+};
+
 const attachAuthCookie = (res, token) => {
   res.cookie("token", token, buildCookieOptions());
 };
+
+const isMockAccount = (user) => String(user?.source || "").trim().toLowerCase() === "mock";
 
 const serializeRedirectPayload = (value) =>
   Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64url");
@@ -369,6 +417,8 @@ router.post("/register", async (req, res) => {
       isEmailVerified: false,
       emailVerificationCode: "",
       emailVerificationExpiresAt: null,
+      passwordResetCode: "",
+      passwordResetExpiresAt: null,
     });
 
     await issueVerificationCode(newUser);
@@ -380,6 +430,10 @@ router.post("/register", async (req, res) => {
       email,
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Database Error:", error);
       res.status(500).json({
         message: "Server error while creating the account.",
@@ -395,6 +449,12 @@ router.post("/login", async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ message: "Account not found. Please sign up first!" });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile is available for browsing only and cannot sign in.",
+      });
     }
 
     if (!user.password && user.provider === "google") {
@@ -439,6 +499,10 @@ router.post("/login", async (req, res) => {
       user: serializeUser(user),
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Database Error during login:", error);
     res.status(500).json({ message: "Server error during login." });
   }
@@ -452,6 +516,12 @@ router.post("/verify-email", async (req, res) => {
 
     if (!user || user.provider !== "local") {
       return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support email verification.",
+      });
     }
 
     if (user.isEmailVerified) {
@@ -504,6 +574,10 @@ router.post("/verify-email", async (req, res) => {
       user: serializeUser(user),
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Email verification error:", error);
     res.status(500).json({ message: "Server error while verifying email." });
   }
@@ -516,6 +590,12 @@ router.post("/verify-email/resend", async (req, res) => {
 
     if (!user || user.provider !== "local") {
       return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support email verification.",
+      });
     }
 
     if (user.isEmailVerified) {
@@ -531,10 +611,187 @@ router.post("/verify-email/resend", async (req, res) => {
       email: user.email,
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Email verification resend error:", error);
       res.status(500).json({
         message: "Server error while resending the verification code.",
       });
+  }
+});
+
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const emailError = getSignupEmailError(email);
+
+    if (emailError) {
+      return res.status(400).json({ message: emailError });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support password reset.",
+      });
+    }
+
+    if (!user.password && user.provider === "google") {
+      return res.status(400).json({
+        message: "This account uses Google Sign-In. Please continue with Google.",
+      });
+    }
+
+    if (!user.password) {
+      return res.status(400).json({
+        message:
+          "This account does not have a password you can reset here. Use the original sign-in method.",
+      });
+    }
+
+    if (!user.isEmailVerified) {
+      await issueVerificationCode(user);
+      await user.save();
+
+      return res.status(403).json({
+        message:
+          "Verify your email before resetting your password. A fresh verification email was sent.",
+        code: "EMAIL_VERIFICATION_REQUIRED",
+        verificationRequired: true,
+        email: user.email,
+      });
+    }
+
+    await issuePasswordResetCode(user);
+    await user.save();
+
+    return res.status(200).json({
+      message: "A password reset code was sent.",
+      email: user.email,
+    });
+  } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
+    console.error("Forgot password error:", error);
+    return res.status(500).json({
+      message: "Server error while sending the password reset code.",
+    });
+  }
+});
+
+router.post("/reset-password", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const submittedCode = String(
+      req.body.code || req.body.resetCode || req.body.token || "",
+    ).trim();
+    const nextPassword =
+      typeof req.body.newPassword === "string"
+        ? req.body.newPassword
+        : String(req.body.password || "");
+    const emailError = getSignupEmailError(email);
+
+    if (emailError) {
+      return res.status(400).json({ message: emailError });
+    }
+
+    if (!submittedCode) {
+      return res.status(400).json({ message: "Reset code is required." });
+    }
+
+    if (!nextPassword.trim()) {
+      return res.status(400).json({ message: "New password is required." });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support password reset.",
+      });
+    }
+
+    if (!user.password && user.provider === "google") {
+      return res.status(400).json({
+        message: "This account uses Google Sign-In. Please continue with Google.",
+      });
+    }
+
+    if (!user.password) {
+      return res.status(400).json({
+        message:
+          "This account does not have a password you can reset here. Use the original sign-in method.",
+      });
+    }
+
+    if (!user.isEmailVerified) {
+      await issueVerificationCode(user);
+      await user.save();
+
+      return res.status(403).json({
+        message:
+          "Verify your email before resetting your password. A fresh verification email was sent.",
+        code: "EMAIL_VERIFICATION_REQUIRED",
+        verificationRequired: true,
+        email: user.email,
+      });
+    }
+
+    if (
+      !user.passwordResetCode ||
+      !user.passwordResetExpiresAt ||
+      user.passwordResetExpiresAt.getTime() < Date.now()
+    ) {
+      await issuePasswordResetCode(user);
+      await user.save();
+
+      return res.status(400).json({
+        message: "That reset code expired. We sent a new password reset email.",
+        code: "PASSWORD_RESET_CODE_EXPIRED",
+        email: user.email,
+      });
+    }
+
+    if (user.passwordResetCode !== submittedCode) {
+      return res.status(400).json({ message: "Incorrect reset code." });
+    }
+
+    user.password = hashPassword(nextPassword);
+    user.passwordResetCode = "";
+    user.passwordResetExpiresAt = null;
+
+    if (!user.username) {
+      user.username = await createUniqueUsername(user.email, user._id);
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "Password reset successful. Sign in with your new password.",
+      email: user.email,
+    });
+  } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
+    console.error("Reset password error:", error);
+    return res.status(500).json({
+      message: "Server error while resetting the password.",
+    });
   }
 });
 

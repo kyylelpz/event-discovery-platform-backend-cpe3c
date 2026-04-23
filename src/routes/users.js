@@ -4,12 +4,16 @@ import MockEvent from "../models/MockEvent.js";
 import MockUser from "../models/MockUser.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
+import { ensureMockEventCatalogSeeded } from "../services/mockEventCatalog.js";
+import { ensureMockUserCatalogSeeded } from "../services/mockUserCatalog.js";
 import { serializePublicUser, serializeUser } from "../utils/userHelpers.js";
 
 const router = express.Router();
 
 const buildCreatedEventCountMap = async () => {
   const [createdRows, mockRows] = await Promise.all([
+const buildCreatedEventCountMaps = async () => {
+  const [createdEventRows, mockEventRows] = await Promise.all([
     CreatedEvent.aggregate([
       {
         $group: {
@@ -22,6 +26,14 @@ const buildCreatedEventCountMap = async () => {
       {
         $group: {
           _id: "$hostUserId",
+        $match: {
+          source: "mock",
+          createdBy: { $exists: true, $ne: "" },
+        },
+      },
+      {
+        $group: {
+          _id: "$createdBy",
           count: { $sum: 1 },
         },
       },
@@ -32,6 +44,23 @@ const buildCreatedEventCountMap = async () => {
     ...createdRows.map((row) => [String(row._id), Number(row.count || 0)]),
     ...mockRows.map((row) => [String(row._id), Number(row.count || 0)]),
   ]);
+  return {
+    realByUserId: new Map(createdEventRows.map((row) => [String(row._id), row.count])),
+    mockByUsername: new Map(
+      mockEventRows.map((row) => [String(row._id || "").trim().toLowerCase(), row.count]),
+    ),
+  };
+};
+
+const getCreatedEventsCountForUser = (user, createdEventCountMaps) => {
+  const source = String(user?.source || "").trim().toLowerCase();
+
+  if (source === "mock") {
+    const username = String(user?.username || "").trim().toLowerCase();
+    return createdEventCountMaps.mockByUsername.get(username) || 0;
+  }
+
+  return createdEventCountMaps.realByUserId.get(String(user?._id || "")) || 0;
 };
 
 const buildConnectionStats = (user) => ({
@@ -63,6 +92,11 @@ router.get("/", async (req, res) => {
       User.find({}).sort({ updatedAt: -1, createdAt: -1, name: 1 }),
       MockUser.find({}).sort({ updatedAt: -1, createdAt: -1, name: 1 }),
       buildCreatedEventCountMap(),
+    await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
+
+    const [users, createdEventCountMaps] = await Promise.all([
+      User.find({}).sort({ updatedAt: -1, createdAt: -1, name: 1 }),
+      buildCreatedEventCountMaps(),
     ]);
 
     const mergedUsers = [
@@ -70,6 +104,7 @@ router.get("/", async (req, res) => {
         serializePublicUser(user, {
           createdEventsCount: createdEventCountMap.get(String(user._id)) || 0,
           isMock: false,
+          createdEventsCount: getCreatedEventsCountForUser(user, createdEventCountMaps),
         }),
       ),
       ...mockUsers.map((user) =>
@@ -91,6 +126,8 @@ router.get("/", async (req, res) => {
 
 router.post("/:username/follow", protect, async (req, res) => {
   try {
+    await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
+
     const username = String(req.params.username || "").trim().toLowerCase();
 
     if (!username) {
@@ -139,16 +176,16 @@ router.post("/:username/follow", protect, async (req, res) => {
     await currentUser.populate("followers", "username");
     await currentUser.populate("following", "username");
 
-    const createdEventCountMap = await buildCreatedEventCountMap();
+    const createdEventCountMaps = await buildCreatedEventCountMaps();
 
     res.json({
       success: true,
       currentUser: serializeUser(currentUser, {
-        createdEventsCount: createdEventCountMap.get(String(currentUser._id)) || 0,
+        createdEventsCount: getCreatedEventsCountForUser(currentUser, createdEventCountMaps),
         ...buildConnectionStats(currentUser),
       }),
       targetUser: serializePublicUser(targetUser, {
-        createdEventsCount: createdEventCountMap.get(String(targetUser._id)) || 0,
+        createdEventsCount: getCreatedEventsCountForUser(targetUser, createdEventCountMaps),
         followersCount: targetUser.followers?.length || 0,
         followingCount: targetUser.following?.length || 0,
       }),
@@ -161,6 +198,8 @@ router.post("/:username/follow", protect, async (req, res) => {
 
 router.delete("/:username/follow", protect, async (req, res) => {
   try {
+    await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
+
     const username = String(req.params.username || "").trim().toLowerCase();
 
     if (!username) {
@@ -196,16 +235,16 @@ router.delete("/:username/follow", protect, async (req, res) => {
     await currentUser.populate("followers", "username");
     await currentUser.populate("following", "username");
 
-    const createdEventCountMap = await buildCreatedEventCountMap();
+    const createdEventCountMaps = await buildCreatedEventCountMaps();
 
     res.json({
       success: true,
       currentUser: serializeUser(currentUser, {
-        createdEventsCount: createdEventCountMap.get(String(currentUser._id)) || 0,
+        createdEventsCount: getCreatedEventsCountForUser(currentUser, createdEventCountMaps),
         ...buildConnectionStats(currentUser),
       }),
       targetUser: serializePublicUser(targetUser, {
-        createdEventsCount: createdEventCountMap.get(String(targetUser._id)) || 0,
+        createdEventsCount: getCreatedEventsCountForUser(targetUser, createdEventCountMaps),
         followersCount: targetUser.followers?.length || 0,
         followingCount: targetUser.following?.length || 0,
       }),

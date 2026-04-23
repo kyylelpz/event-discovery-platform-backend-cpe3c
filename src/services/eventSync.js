@@ -10,6 +10,13 @@ const EVENTS_PER_PAGE = 10;
 const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 200);
 const MAX_PAGES = Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE));
 const TARGET_IMAGE_WIDTH = Number(process.env.EVENTS_IMAGE_WIDTH || 1600);
+const SOURCE_IMAGE_FETCH_TIMEOUT_MS = Number(
+  process.env.EVENT_SOURCE_IMAGE_TIMEOUT_MS || 8000,
+);
+const SOURCE_IMAGE_FETCH_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.EVENT_SOURCE_IMAGE_CONCURRENCY || 4),
+);
 
 const PROVINCES = [
   "Abra",
@@ -192,6 +199,7 @@ const refreshState = {
 };
 
 let refreshPromise = null;
+const sourceImageCache = new Map();
 
 const slugify = (value) =>
   String(value || "event")
@@ -238,6 +246,8 @@ const getAddress = (event) => asText(event.address || event.location);
 const normalizeImageProtocol = (value) =>
   value.startsWith("//") ? `https:${value}` : value;
 
+const dedupeValues = (values) => Array.from(new Set(values.filter(Boolean)));
+
 const collectImageCandidates = (value) => {
   if (!value) {
     return [];
@@ -281,11 +291,214 @@ const invalidEventImagePatterns = [
   /streetview/i,
   /encrypted-tbn/i,
   /placehold/i,
+  /\.(?:css|js|json)(?:[?#]|$)/i,
+  /parastorage\.com\/pages\/pages\/thunderbolt/i,
+  /bundle\.min\.(?:js|css)/i,
 ];
 
 const isUsableEventImage = (imageUrl) =>
   Boolean(imageUrl) &&
   !invalidEventImagePatterns.some((pattern) => pattern.test(imageUrl));
+
+const isLikelyImageUrl = (imageUrl) => {
+  if (!isUsableEventImage(imageUrl)) {
+    return false;
+  }
+
+  if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(imageUrl)) {
+    return true;
+  }
+
+  if (
+    /(?:[?&](?:url|image|img|src)=|\/_next\/image\b|\/images?\b|\/media\b|\/photo\b|\/poster\b|\/banner\b|\/hero\b)/i.test(
+      imageUrl,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+const resolveAbsoluteUrl = (value, baseUrl = "") => {
+  const normalizedValue = asText(value);
+
+  if (!normalizedValue) {
+    return "";
+  }
+
+  try {
+    return new URL(normalizeImageProtocol(normalizedValue), baseUrl).toString();
+  } catch {
+    return normalizeImageProtocol(normalizedValue);
+  }
+};
+
+const parseHtmlAttributes = (tag) => {
+  const attributes = {};
+  const attributePattern =
+    /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  let match = attributePattern.exec(tag);
+
+  while (match) {
+    const attributeName = String(match[1] || "").toLowerCase();
+    const attributeValue = match[3] ?? match[4] ?? match[5] ?? "";
+    attributes[attributeName] = attributeValue;
+    match = attributePattern.exec(tag);
+  }
+
+  return attributes;
+};
+
+const collectJsonImageCandidates = (value, baseUrl, bucket) => {
+  if (!value) {
+    return;
+  }
+
+  if (typeof value === "string") {
+    const resolvedUrl = resolveAbsoluteUrl(value, baseUrl);
+
+    if (resolvedUrl) {
+      bucket.push(resolvedUrl);
+    }
+
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectJsonImageCandidates(item, baseUrl, bucket));
+    return;
+  }
+
+  if (typeof value === "object") {
+    collectJsonImageCandidates(
+      value.image || value.images || value.thumbnailUrl || value.thumbnail,
+      baseUrl,
+      bucket,
+    );
+  }
+};
+
+const extractSourceImageCandidates = (html, baseUrl) => {
+  const candidates = [];
+  const preferredMetaKeys = new Set([
+    "og:image",
+    "og:image:url",
+    "og:image:secure_url",
+    "twitter:image",
+    "twitter:image:src",
+    "image",
+    "thumbnailurl",
+  ]);
+
+  const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
+
+  metaTags.forEach((tag) => {
+    const attributes = parseHtmlAttributes(tag);
+    const attributeKey = String(
+      attributes.property || attributes.name || attributes.itemprop || "",
+    ).toLowerCase();
+    const content = resolveAbsoluteUrl(attributes.content || "", baseUrl);
+
+    if (preferredMetaKeys.has(attributeKey) && content) {
+      candidates.push(content);
+    }
+  });
+
+  const linkTags = html.match(/<link\b[^>]*>/gi) || [];
+
+  linkTags.forEach((tag) => {
+    const attributes = parseHtmlAttributes(tag);
+    const rel = String(attributes.rel || "").toLowerCase();
+    const href = resolveAbsoluteUrl(attributes.href || "", baseUrl);
+
+    if ((rel.includes("image_src") || rel.includes("preload")) && href) {
+      candidates.push(href);
+    }
+  });
+
+  const scriptTags =
+    html.match(
+      /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi,
+    ) || [];
+
+  scriptTags.forEach((tag) => {
+    const contentMatch = tag.match(
+      /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i,
+    );
+    const scriptContent = String(contentMatch?.[1] || "").trim();
+
+    if (!scriptContent) {
+      return;
+    }
+
+    try {
+      const parsedContent = JSON.parse(scriptContent);
+      collectJsonImageCandidates(parsedContent, baseUrl, candidates);
+    } catch {
+      // Ignore invalid JSON-LD blocks and continue parsing the page.
+    }
+  });
+
+  return dedupeValues(
+    candidates
+      .map((candidate) => optimizeImageUrl(candidate))
+      .filter((candidate) => isLikelyImageUrl(candidate)),
+  );
+};
+
+const fetchSourceImageCandidates = async (eventUrl) => {
+  if (!eventUrl) {
+    return [];
+  }
+
+  if (sourceImageCache.has(eventUrl)) {
+    return sourceImageCache.get(eventUrl);
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    SOURCE_IMAGE_FETCH_TIMEOUT_MS,
+  );
+
+  try {
+    const response = await fetch(eventUrl, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "User-Agent":
+          "Mozilla/5.0 (compatible; EventcinityBot/1.0; +https://eventcinity.local)",
+      },
+    });
+
+    if (!response.ok) {
+      sourceImageCache.set(eventUrl, []);
+      return [];
+    }
+
+    const contentType = String(response.headers.get("content-type") || "");
+
+    if (!contentType.includes("text/html")) {
+      sourceImageCache.set(eventUrl, []);
+      return [];
+    }
+
+    const html = await response.text();
+    const resolvedUrl = response.url || eventUrl;
+    const candidates = extractSourceImageCandidates(html, resolvedUrl);
+
+    sourceImageCache.set(eventUrl, candidates);
+    return candidates;
+  } catch (error) {
+    sourceImageCache.set(eventUrl, []);
+    console.warn(`[eventSync] Unable to scrape source images for ${eventUrl}:`, error.message);
+    return [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
 const updateNumericSearchParams = (searchParams, keys, nextValue) => {
   let updated = false;
@@ -432,6 +645,14 @@ const getImageCandidateScore = (imageUrl) => {
     score += Math.max(...widthHints) / 400;
   }
 
+  if (/original|full|maxres|hero|banner/i.test(imageUrl)) {
+    score += 5;
+  }
+
+  if (/thumbnail|thumb|small|icon/i.test(imageUrl)) {
+    score -= 5;
+  }
+
   try {
     const url = new URL(imageUrl);
 
@@ -462,6 +683,24 @@ const getImageCandidateScore = (imageUrl) => {
   return score;
 };
 
+const chooseBestImageUrl = (candidates, sourcePreferredUrls = []) => {
+  const normalizedCandidates = dedupeValues(candidates);
+  const sourcePreferredSet = new Set(sourcePreferredUrls);
+
+  if (!normalizedCandidates.length) {
+    return "";
+  }
+
+  return normalizedCandidates.sort((left, right) => {
+    const leftScore =
+      getImageCandidateScore(left) + (sourcePreferredSet.has(left) ? 8 : 0);
+    const rightScore =
+      getImageCandidateScore(right) + (sourcePreferredSet.has(right) ? 8 : 0);
+
+    return rightScore - leftScore;
+  })[0];
+};
+
 const getImageUrl = (event) => {
   const candidates = Array.from(
     new Set(
@@ -473,7 +712,13 @@ const getImageUrl = (event) => {
         ...collectImageCandidates(event.thumbnail),
         ...collectImageCandidates(event.logo),
         ...collectImageCandidates(event.rawPayload?.image),
+        ...collectImageCandidates(event.rawPayload?.images),
         ...collectImageCandidates(event.rawPayload?.thumbnail),
+        ...collectImageCandidates(event.rawPayload?.thumbnail_url),
+        ...collectImageCandidates(event.rawPayload?.original),
+        ...collectImageCandidates(event.rawPayload?.large),
+        ...collectImageCandidates(event.rawPayload?.full),
+        ...collectImageCandidates(event.rawPayload?.photos),
       ]
         .filter(Boolean)
         .map((candidate) => optimizeImageUrl(candidate)),
@@ -485,18 +730,78 @@ const getImageUrl = (event) => {
   );
 
   if (usableCandidates.length > 0) {
-    return usableCandidates.sort(
-      (left, right) => getImageCandidateScore(right) - getImageCandidateScore(left),
-    )[0];
+    return chooseBestImageUrl(usableCandidates);
   }
 
   if (!candidates.length) {
     return "";
   }
 
-  return candidates.sort(
-    (left, right) => getImageCandidateScore(right) - getImageCandidateScore(left),
-  )[0];
+  return chooseBestImageUrl(candidates);
+};
+
+const shouldScrapeSourceImages = (event) => {
+  if (!event?.eventUrl) {
+    return false;
+  }
+
+  if (!event.imageUrl) {
+    return true;
+  }
+
+  return getImageCandidateScore(event.imageUrl) < 6;
+};
+
+const enrichEventWithSourceImages = async (event) => {
+  if (!shouldScrapeSourceImages(event)) {
+    return event;
+  }
+
+  const scrapedImageCandidates = await fetchSourceImageCandidates(event.eventUrl);
+
+  if (!scrapedImageCandidates.length) {
+    return event;
+  }
+
+  const nextImageUrl = chooseBestImageUrl(
+    [event.imageUrl, ...scrapedImageCandidates].filter(Boolean),
+    scrapedImageCandidates,
+  );
+
+  return {
+    ...event,
+    imageUrl: nextImageUrl || event.imageUrl,
+    rawPayload: {
+      ...(event.rawPayload || {}),
+      sourceImageCandidates: scrapedImageCandidates.slice(0, 6),
+    },
+  };
+};
+
+const mapWithConcurrency = async (items, concurrency, mapper) => {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+
+      if (currentIndex >= items.length) {
+        return;
+      }
+
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length || 1) }, () =>
+      worker(),
+    ),
+  );
+
+  return results;
 };
 
 const inferCategory = (event) => {
@@ -666,21 +971,26 @@ export const refreshEventCatalog = async ({
     const dedupedEvents = Array.from(
       new Map(normalizedEvents.map((event) => [event.eventId, event])).values(),
     );
+    const enrichedEvents = await mapWithConcurrency(
+      dedupedEvents,
+      SOURCE_IMAGE_FETCH_CONCURRENCY,
+      enrichEventWithSourceImages,
+    );
 
     await Event.deleteMany({ source: "serpapi" });
 
-    if (dedupedEvents.length > 0) {
-      await Event.insertMany(dedupedEvents, { ordered: false });
+    if (enrichedEvents.length > 0) {
+      await Event.insertMany(enrichedEvents, { ordered: false });
     }
 
     refreshState.lastSuccessAt = new Date().toISOString();
     refreshState.lastError = null;
-    refreshState.lastResultCount = dedupedEvents.length;
+    refreshState.lastResultCount = enrichedEvents.length;
     refreshState.lastPageStarts = pageStarts;
     refreshState.lastQuery = resolvedQuery;
 
     console.log(
-      `[eventSync] Seeded ${dedupedEvents.length} events from SerpAPI (${reason}) using query "${resolvedQuery}"`,
+      `[eventSync] Seeded ${enrichedEvents.length} events from SerpAPI (${reason}) using query "${resolvedQuery}"`,
     );
 
     return {
@@ -689,7 +999,7 @@ export const refreshEventCatalog = async ({
       reason,
       requestedCount: MAX_RESULTS,
       fetchedCount: rawEvents.length,
-      count: dedupedEvents.length,
+      count: enrichedEvents.length,
       pageStarts,
       refreshedAt: refreshState.lastSuccessAt,
     };

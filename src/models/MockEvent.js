@@ -107,6 +107,12 @@ const mockEventSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    createdBy: {
+      type: String,
+      default: "",
+      trim: true,
+      lowercase: true,
+    },
     attendeeCount: {
       type: Number,
       default: 0,
@@ -118,6 +124,10 @@ const mockEventSchema = new mongoose.Schema(
     reactions: {
       type: Number,
       default: 0,
+    },
+    isFeatured: {
+      type: Boolean,
+      default: false,
     },
     source: {
       type: String,
@@ -136,6 +146,12 @@ const mockEventSchema = new mongoose.Schema(
     timestamps: true,
     collection: "mock_events",
   },
+    lastSeededAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { timestamps: true, collection: "mock_events" },
 );
 
 export default eventDB.models.MockEvent || eventDB.model("MockEvent", mockEventSchema);

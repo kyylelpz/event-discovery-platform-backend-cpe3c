@@ -11,7 +11,9 @@ import {
   serializePublicUser,
   serializeUser,
 } from "../utils/userHelpers.js";
-import { cloudinary, upload } from "../utils/cloudinary.js";
+import { ensureMockEventCatalogSeeded } from "../services/mockEventCatalog.js";
+import { ensureMockUserCatalogSeeded } from "../services/mockUserCatalog.js";
+import { cloudinary, uploadAvatarImage } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
@@ -22,6 +24,15 @@ const getCreatedEventsCount = async (userId) => {
   ]);
 
   return createdCount + mockCount;
+const getCreatedEventsCount = async (user) => {
+  if (String(user?.source || "").trim().toLowerCase() === "mock") {
+    return MockEvent.countDocuments({
+      source: "mock",
+      createdBy: String(user?.username || "").trim().toLowerCase(),
+    });
+  }
+
+  return CreatedEvent.countDocuments({ userId: user?._id });
 };
 
 const buildConnectionStats = (user) => ({
@@ -61,7 +72,7 @@ const sendCurrentProfile = async (req, res) => {
     return res.status(404).json({ message: "User not found." });
   }
 
-  const createdEventsCount = await getCreatedEventsCount(user._id);
+  const createdEventsCount = await getCreatedEventsCount(user);
   const connectionStats = buildConnectionStats(user);
 
   res.json({
@@ -161,7 +172,7 @@ const updateCurrentProfile = async (req, res) => {
     await user.save();
     await user.populate("followers", "username");
     await user.populate("following", "username");
-    const createdEventsCount = await getCreatedEventsCount(user._id);
+    const createdEventsCount = await getCreatedEventsCount(user);
     const connectionStats = buildConnectionStats(user);
 
     res.json({
@@ -177,8 +188,8 @@ const updateCurrentProfile = async (req, res) => {
 router.get("/", protect, sendCurrentProfile);
 router.get("/me", protect, sendCurrentProfile);
 
-router.put("/", protect, upload.single("avatar"), updateCurrentProfile);
-router.put("/me", protect, upload.single("avatar"), updateCurrentProfile);
+router.put("/", protect, uploadAvatarImage, updateCurrentProfile);
+router.put("/me", protect, uploadAvatarImage, updateCurrentProfile);
 
 router.get("/:username", async (req, res) => {
   try {
@@ -187,6 +198,9 @@ router.get("/:username", async (req, res) => {
       findUserByUsername(normalizedUsername),
       MockUser.findOne({ username: normalizedUsername }),
     ]);
+    await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
+
+    const user = await findUserByUsername(req.params.username);
 
     if (!user && !mockUser) {
       return res.status(404).json({ message: "User not found." });
@@ -194,6 +208,7 @@ router.get("/:username", async (req, res) => {
 
     if (user) {
       const createdEventsCount = await getCreatedEventsCount(user._id);
+    const createdEventsCount = await getCreatedEventsCount(user);
 
       return res.json({
         user: serializePublicUser(user, {

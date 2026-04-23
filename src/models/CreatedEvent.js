@@ -122,7 +122,7 @@ const createdEventSchema = new mongoose.Schema(
     },
     source: {
       type: String,
-      default: "website",
+      default: "created",
     },
     status: {
       type: String,
