@@ -1,6 +1,7 @@
 import express from "express";
 import CreatedEvent from "../models/CreatedEvent.js";
 import MockEvent from "../models/MockEvent.js";
+import MockUser from "../models/MockUser.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
 import { ensureMockEventCatalogSeeded } from "../services/mockEventCatalog.js";
@@ -81,15 +82,33 @@ router.get("/", async (req, res) => {
   try {
     await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
 
-    const [users, createdEventCountMaps] = await Promise.all([
+    const [users, mockUsers, createdEventCountMaps] = await Promise.all([
       User.find({}).sort({ updatedAt: -1, createdAt: -1, name: 1 }),
+      MockUser.find({}).sort({ updatedAt: -1, createdAt: -1, name: 1 }),
       buildCreatedEventCountMaps(),
     ]);
 
+    const existingUsernames = new Set(
+      users
+        .map((user) => String(user.username || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+
+    const mergedUsers = [
+      ...users,
+      ...mockUsers.filter((mockUser) => {
+        const username = String(mockUser.username || "").trim().toLowerCase();
+        return username && !existingUsernames.has(username);
+      }),
+    ];
+
     res.json({
-      users: users.map((user) =>
+      users: mergedUsers.map((user) =>
         serializePublicUser(user, {
           createdEventsCount: getCreatedEventsCountForUser(user, createdEventCountMaps),
+          isMock:
+            String(user.source || "").trim().toLowerCase() === "mock" ||
+            Boolean(user.isMock),
         }),
       ),
     });
