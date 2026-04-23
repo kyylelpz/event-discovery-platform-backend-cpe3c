@@ -2,6 +2,7 @@ import express from "express";
 import protect from "../middleware/protect.js";
 import CreatedEvent from "../models/CreatedEvent.js";
 import Event from "../models/Event.js";
+import MockEvent from "../models/MockEvent.js";
 import SavedEvent from "../models/SavedEvent.js";
 import User from "../models/User.js";
 import Venue from "../models/Venue.js";
@@ -21,6 +22,13 @@ const router = express.Router();
 
 const escapeRegex = (value) =>
   String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const slugify = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
 const buildCreatedEventsQuery = ({ location, userId } = {}) => {
   const query = {};
@@ -138,8 +146,45 @@ const serializeCreatedEvent = (event, venueMetadata = {}) => ({
   attendeeCount: Number(event.attendeeCount || 0),
   savedCount: Number(event.savedCount || 0),
   reactions: Number(event.reactions || 0),
-  source: event.source || "website",
+  source: "created",
   status: event.status || "published",
+  rawPayload: event.rawPayload || null,
+  updatedAt: event.updatedAt,
+  createdAt: event.createdAt,
+});
+
+const serializeStoredEvent = (event, venueMetadata = {}) => ({
+  id: event.eventId,
+  eventId: event.eventId,
+  title: event.title,
+  description: event.description || "",
+  category: event.category || "Community",
+  province: event.province || "",
+  location: event.location || event.venue || "Philippines",
+  venue: event.venue || "",
+  address: event.address || "",
+  venueGoogleMapsUrl:
+    event.venueGoogleMapsUrl || venueMetadata.venueGoogleMapsUrl || "",
+  venuePlaceId: event.venuePlaceId || venueMetadata.venuePlaceId || "",
+  venueRating: Number(event.venueRating || venueMetadata.venueRating || 0),
+  venueReviewCount: Number(
+    event.venueReviewCount || venueMetadata.venueReviewCount || 0,
+  ),
+  venueCoordinates: event.venueCoordinates || venueMetadata.venueCoordinates || null,
+  startDate: event.startDate || "",
+  date: event.startDate || "",
+  timeLabel: event.timeLabel || "",
+  time: event.timeLabel || "",
+  imageUrl: event.imageUrl || "",
+  eventUrl: event.eventUrl || "",
+  organizer: event.organizer || "Eventcinity Partner",
+  createdBy: event.createdBy || "",
+  attendeeCount: Number(event.attendeeCount || 0),
+  savedCount: Number(event.savedCount || 0),
+  reactions: Number(event.reactions || 0),
+  source: event.source || "serpapi",
+  status: event.status || "published",
+  isFeatured: Boolean(event.isFeatured),
   rawPayload: event.rawPayload || null,
   updatedAt: event.updatedAt,
   createdAt: event.createdAt,
@@ -203,14 +248,12 @@ router.get("/", async (req, res) => {
       ...createdEvents.map((event) =>
         serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
       ),
-      ...mockEvents.map((event) => ({
-        ...event,
-        ...resolveVenueMetadata(event, venueLookup),
-      })),
-      ...events.map((event) => ({
-        ...event,
-        ...resolveVenueMetadata(event, venueLookup),
-      })),
+      ...mockEvents.map((event) =>
+        serializeStoredEvent(event, resolveVenueMetadata(event, venueLookup)),
+      ),
+      ...events.map((event) =>
+        serializeStoredEvent(event, resolveVenueMetadata(event, venueLookup)),
+      ),
     ].sort((leftEvent, rightEvent) => {
       const leftTime = new Date(
         leftEvent.updatedAt || leftEvent.createdAt || 0,
@@ -360,8 +403,14 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
       );
     }
 
-    const generatedEventId =
-      cloudinaryId || `created-${req.user._id}-${Date.now()}`;
+    const generatedEventId = [
+      "created",
+      slugify(req.user.username || req.user._id),
+      Date.now(),
+      slugify(req.body.title || "event"),
+    ]
+      .filter(Boolean)
+      .join("-");
     const newEvent = await CreatedEvent.create({
       userId: req.user._id,
       createdBy: req.user.username || "",
@@ -399,7 +448,7 @@ router.post("/create", protect, upload.single("image"), async (req, res) => {
       imageUrl: imageUrl || req.body.imageUrl || "",
       eventId: generatedEventId,
       organizer: req.body.organizer || req.user.name || "Community Host",
-      source: "website",
+      source: "created",
       status: "published",
       rawPayload: req.body,
     });
@@ -463,6 +512,42 @@ router.delete("/saved/:eventId", protect, async (req, res) => {
     res.json({ success: true, message: "Event removed from saved" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/:eventId", async (req, res) => {
+  try {
+    const eventId = String(req.params.eventId || "").trim();
+
+    if (!eventId) {
+      return res.status(400).json({ success: false, message: "Event ID is required." });
+    }
+
+    const [createdEvent, mockEvent, liveEvent, venues] = await Promise.all([
+      CreatedEvent.findOne({ eventId }).lean(),
+      MockEvent.findOne({ eventId }).lean(),
+      Event.findOne({ eventId }).lean(),
+      Venue.find({}).lean(),
+    ]);
+
+    const eventRecord = createdEvent || mockEvent || liveEvent;
+
+    if (!eventRecord) {
+      return res.status(404).json({ success: false, message: "Event not found." });
+    }
+
+    const venueLookup = buildVenueLookup(venues);
+    const venueMetadata = resolveVenueMetadata(eventRecord, venueLookup);
+    const serializedEvent = createdEvent
+      ? serializeCreatedEvent(eventRecord, venueMetadata)
+      : serializeStoredEvent(eventRecord, venueMetadata);
+
+    return res.json({
+      success: true,
+      data: serializedEvent,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
