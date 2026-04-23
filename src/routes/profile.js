@@ -12,7 +12,7 @@ import {
 } from "../utils/userHelpers.js";
 import { ensureMockEventCatalogSeeded } from "../services/mockEventCatalog.js";
 import { ensureMockUserCatalogSeeded } from "../services/mockUserCatalog.js";
-import { cloudinary, upload } from "../utils/cloudinary.js";
+import { cloudinary, uploadAvatarImage } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
@@ -177,8 +177,8 @@ const updateCurrentProfile = async (req, res) => {
 router.get("/", protect, sendCurrentProfile);
 router.get("/me", protect, sendCurrentProfile);
 
-router.put("/", protect, upload.single("avatar"), updateCurrentProfile);
-router.put("/me", protect, upload.single("avatar"), updateCurrentProfile);
+router.put("/", protect, uploadAvatarImage, updateCurrentProfile);
+router.put("/me", protect, uploadAvatarImage, updateCurrentProfile);
 
 router.get("/:username", async (req, res) => {
   try {

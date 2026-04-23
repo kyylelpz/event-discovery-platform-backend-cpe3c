@@ -61,6 +61,27 @@ app.use("/api/interactions", interactionRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/users", userRoutes);
 
+app.use((error, req, res, next) => {
+  if (!error) {
+    return next();
+  }
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  const status = Number.isInteger(error.status) ? error.status : 500;
+
+  if (status >= 500) {
+    console.error("Unhandled server error:", error);
+  }
+
+  return res.status(status).json({
+    success: false,
+    message: error.message || "Server error.",
+  });
+});
+
 app.get("/api/health", (req, res) => {
   res.json({ status: "Backend running" });
 });

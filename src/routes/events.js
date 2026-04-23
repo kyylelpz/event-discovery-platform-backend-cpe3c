@@ -17,7 +17,7 @@ import {
   getStoredEvents,
   refreshEventCatalog,
 } from "../services/eventSync.js";
-import { cloudinary, upload } from "../utils/cloudinary.js";
+import { cloudinary, uploadEventImage } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
@@ -342,7 +342,7 @@ router.get("/created/by/:username", async (req, res) => {
   }
 });
 
-router.post("/create", protect, upload.single("image"), async (req, res) => {
+router.post("/create", protect, uploadEventImage, async (req, res) => {
   try {
     let imageUrl = "";
     let cloudinaryId = "";
