@@ -6,6 +6,25 @@ const venueSchema = new mongoose.Schema({
   description: String,
   location: String,
   google_maps_link: String,
+  google_maps_place_id: String,
+  rating: {
+    type: Number,
+    default: 0,
+  },
+  reviewCount: {
+    type: Number,
+    default: 0,
+  },
+  coordinates: {
+    lat: {
+      type: Number,
+      default: null,
+    },
+    lng: {
+      type: Number,
+      default: null,
+    },
+  },
 });
 
-export default eventDB.model("Venue", venueSchema);
+export default eventDB.models.Venue || eventDB.model("Venue", venueSchema);

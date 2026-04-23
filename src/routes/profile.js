@@ -15,22 +15,48 @@ const router = express.Router();
 const getCreatedEventsCount = async (userId) =>
   CreatedEvent.countDocuments({ userId });
 
+const buildConnectionStats = (user) => ({
+  followersCount: Array.isArray(user?.followers) ? user.followers.length : 0,
+  followingCount: Array.isArray(user?.following) ? user.following.length : 0,
+  followerUsernames: Array.isArray(user?.followers)
+    ? user.followers
+        .map((entry) =>
+          typeof entry === "object" && entry !== null
+            ? String(entry.username || "").trim().toLowerCase()
+            : "",
+        )
+        .filter(Boolean)
+    : [],
+  followingUsernames: Array.isArray(user?.following)
+    ? user.following
+        .map((entry) =>
+          typeof entry === "object" && entry !== null
+            ? String(entry.username || "").trim().toLowerCase()
+            : "",
+        )
+        .filter(Boolean)
+    : [],
+});
+
 const findUserByUsername = async (username) =>
   User.findOne({
     username: String(username || "").trim().toLowerCase(),
   });
 
 const sendCurrentProfile = async (req, res) => {
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.user._id)
+    .populate("followers", "username")
+    .populate("following", "username");
 
   if (!user) {
     return res.status(404).json({ message: "User not found." });
   }
 
   const createdEventsCount = await getCreatedEventsCount(user._id);
+  const connectionStats = buildConnectionStats(user);
 
   res.json({
-    user: serializeUser(user, { createdEventsCount }),
+    user: serializeUser(user, { createdEventsCount, ...connectionStats }),
   });
 };
 
@@ -97,11 +123,14 @@ const updateCurrentProfile = async (req, res) => {
     }
 
     await user.save();
+    await user.populate("followers", "username");
+    await user.populate("following", "username");
     const createdEventsCount = await getCreatedEventsCount(user._id);
+    const connectionStats = buildConnectionStats(user);
 
     res.json({
       message: "Profile updated successfully.",
-      user: serializeUser(user, { createdEventsCount }),
+      user: serializeUser(user, { createdEventsCount, ...connectionStats }),
     });
   } catch (error) {
     console.error("Profile update error:", error);
@@ -126,7 +155,11 @@ router.get("/:username", async (req, res) => {
     const createdEventsCount = await getCreatedEventsCount(user._id);
 
     res.json({
-      user: serializePublicUser(user, { createdEventsCount }),
+      user: serializePublicUser(user, {
+        createdEventsCount,
+        followersCount: user.followers?.length || 0,
+        followingCount: user.following?.length || 0,
+      }),
     });
   } catch (error) {
     console.error("Public profile fetch error:", error);

@@ -62,6 +62,32 @@ const createdEventSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    venueGoogleMapsUrl: {
+      type: String,
+      default: "",
+    },
+    venuePlaceId: {
+      type: String,
+      default: "",
+    },
+    venueRating: {
+      type: Number,
+      default: 0,
+    },
+    venueReviewCount: {
+      type: Number,
+      default: 0,
+    },
+    venueCoordinates: {
+      lat: {
+        type: Number,
+        default: null,
+      },
+      lng: {
+        type: Number,
+        default: null,
+      },
+    },
     startDate: {
       type: String,
       default: "",
