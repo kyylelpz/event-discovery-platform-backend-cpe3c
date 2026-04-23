@@ -18,7 +18,11 @@ import {
   passwordNeedsMigration,
   verifyPassword,
 } from "../utils/password.js";
-import { sendVerificationEmail } from "../services/email.js";
+import {
+  isEmailDeliveryConfigurationError,
+  isEmailDeliveryRequestError,
+  sendVerificationEmail,
+} from "../services/email.js";
 
 dotenv.config();
 
@@ -193,6 +197,26 @@ const issueVerificationCode = async (user) => {
 
   user.emailVerificationCode = nextCode;
   user.emailVerificationExpiresAt = nextExpiry;
+};
+
+const trySendEmailFailureResponse = (res, error) => {
+  if (isEmailDeliveryConfigurationError(error)) {
+    res.status(503).json({
+      message:
+        "Verification email delivery is not configured on the server yet. Set the email provider API key and verify noreply@eventcinity.com with that provider.",
+    });
+    return true;
+  }
+
+  if (isEmailDeliveryRequestError(error)) {
+    res.status(502).json({
+      message:
+        "Unable to send the verification email right now. Please try again after checking the email provider configuration and domain verification.",
+    });
+    return true;
+  }
+
+  return false;
 };
 
 const attachAuthCookie = (res, token) => {
@@ -380,6 +404,10 @@ router.post("/register", async (req, res) => {
       email,
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Database Error:", error);
       res.status(500).json({
         message: "Server error while creating the account.",
@@ -439,6 +467,10 @@ router.post("/login", async (req, res) => {
       user: serializeUser(user),
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Database Error during login:", error);
     res.status(500).json({ message: "Server error during login." });
   }
@@ -504,6 +536,10 @@ router.post("/verify-email", async (req, res) => {
       user: serializeUser(user),
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Email verification error:", error);
     res.status(500).json({ message: "Server error while verifying email." });
   }
@@ -531,6 +567,10 @@ router.post("/verify-email/resend", async (req, res) => {
       email: user.email,
     });
   } catch (error) {
+    if (trySendEmailFailureResponse(res, error)) {
+      return;
+    }
+
     console.error("Email verification resend error:", error);
       res.status(500).json({
         message: "Server error while resending the verification code.",
