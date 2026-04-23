@@ -1,7 +1,6 @@
 import express from "express";
 import CreatedEvent from "../models/CreatedEvent.js";
 import MockEvent from "../models/MockEvent.js";
-import MockUser from "../models/MockUser.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
 import {
@@ -51,16 +50,10 @@ const buildConnectionStats = (user) => ({
     : [],
 });
 
-const findUserByUsername = async (username) => {
-  const normalizedUsername = String(username || "").trim().toLowerCase();
-
-  const user = await User.findOne({ username: normalizedUsername });
-  if (user) {
-    return user;
-  }
-
-  return MockUser.findOne({ username: normalizedUsername });
-};
+const findUserByUsername = async (username) =>
+  User.findOne({
+    username: String(username || "").trim().toLowerCase(),
+  });
 
 const sendCurrentProfile = async (req, res) => {
   const user = await User.findById(req.user._id)
