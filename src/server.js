@@ -10,6 +10,7 @@ import "./routes/db.js";
 import authRoutes from "./routes/auth.js";
 import eventRoutes from "./routes/events.js";
 import interactionRoutes from "./routes/interactions.js";
+import notificationRoutes from "./routes/notifications.js";
 import profileRoutes from "./routes/profile.js";
 import userRoutes from "./routes/users.js";
 import { syncMockEventCatalog } from "./services/mockEventCatalog.js";
@@ -58,6 +59,7 @@ app.use(passport.initialize());
 app.use("/api/auth", authRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/interactions", interactionRoutes);
+app.use("/api/notifications", notificationRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/users", userRoutes);
 
