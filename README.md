@@ -11,6 +11,12 @@ Eventcinity Backend is a **Node.js + Express REST API** that handles authenticat
 
 ---
 
+## Related Repository
+
+- Frontend: https://github.com/kyylelpz/event-discovery-platform-cpe3c
+
+---
+
 ## Overview
 
 This backend provides:
