@@ -10,6 +10,28 @@ const mockEventSchema = new mongoose.Schema(
       index: true,
       trim: true,
     },
+    hostUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      index: true,
+    },
+    hostUsername: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
+    hostName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    hostAvatar: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     title: {
       type: String,
       required: true,
@@ -38,6 +60,32 @@ const mockEventSchema = new mongoose.Schema(
     address: {
       type: String,
       default: "",
+    },
+    venueGoogleMapsUrl: {
+      type: String,
+      default: "",
+    },
+    venuePlaceId: {
+      type: String,
+      default: "",
+    },
+    venueRating: {
+      type: Number,
+      default: 0,
+    },
+    venueReviewCount: {
+      type: Number,
+      default: 0,
+    },
+    venueCoordinates: {
+      lat: {
+        type: Number,
+        default: null,
+      },
+      lng: {
+        type: Number,
+        default: null,
+      },
     },
     startDate: {
       type: String,
@@ -85,10 +133,19 @@ const mockEventSchema = new mongoose.Schema(
       type: String,
       default: "mock",
     },
+    status: {
+      type: String,
+      default: "published",
+    },
     rawPayload: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
+  },
+  {
+    timestamps: true,
+    collection: "mock_events",
+  },
     lastSeededAt: {
       type: Date,
       default: Date.now,

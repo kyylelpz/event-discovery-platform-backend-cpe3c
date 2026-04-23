@@ -1,5 +1,6 @@
 import express from "express";
 import protect from "../middleware/protect.js";
+import MockUser from "../models/MockUser.js";
 import UserEventInteraction from "../models/UserEventInteraction.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
@@ -294,14 +295,17 @@ router.get("/public/:username/attending", async (req, res) => {
       return res.status(400).json({ message: "Username is required." });
     }
 
-    const user = await User.findOne({ username });
+    const [user, mockUser] = await Promise.all([
+      User.findOne({ username }),
+      MockUser.findOne({ username }),
+    ]);
 
-    if (!user) {
+    if (!user && !mockUser) {
       return res.status(404).json({ message: "User not found." });
     }
 
     const records = await UserEventInteraction.find({
-      userId: user._id,
+      userId: user?._id || mockUser?._id,
       attending: true,
     }).sort({
       updatedAt: -1,
@@ -321,12 +325,20 @@ router.get("/public/:username/attending", async (req, res) => {
 
 router.get("/:eventId/following-attendees", protect, async (req, res) => {
   try {
+    const eventId = String(req.params.eventId || "").trim();
     const eventId = pickString(req.params.eventId, req.query.eventId);
 
     if (!eventId) {
       return res.status(400).json({ message: "Event id is required." });
     }
 
+    const currentUser = await User.findById(req.user._id);
+
+    if (!currentUser) {
+      return res.status(401).json({ message: "User no longer exists." });
+    }
+
+    const followingIds = Array.isArray(currentUser.following) ? currentUser.following : [];
     const followingIds = Array.from(
       new Set(
         (Array.isArray(req.user?.following) ? req.user.following : [])
@@ -339,12 +351,46 @@ router.get("/:eventId/following-attendees", protect, async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
+    const attendingRecords = await UserEventInteraction.find({
     const records = await UserEventInteraction.find({
       eventId,
       attending: true,
       userId: { $in: followingIds },
     })
       .sort({ updatedAt: -1 })
+      .lean();
+
+    const attendingUserIds = Array.from(
+      new Set(attendingRecords.map((record) => String(record.userId || "")).filter(Boolean)),
+    );
+    const users = await User.find({ _id: { $in: attendingUserIds } })
+      .select("name username avatar")
+      .lean();
+    const userLookup = new Map(users.map((user) => [String(user._id), user]));
+
+    res.json({
+      success: true,
+      data: attendingRecords
+        .map((record) => {
+          const matchedUser = userLookup.get(String(record.userId || ""));
+
+          if (!matchedUser) {
+            return null;
+          }
+
+          return {
+            id: String(matchedUser._id),
+            username: String(matchedUser.username || "").trim().toLowerCase(),
+            name: matchedUser.name || matchedUser.username || "Eventcinity user",
+            profilePic: matchedUser.avatar || "",
+            attendedAt: record.updatedAt,
+          };
+        })
+        .filter(Boolean),
+    });
+  } catch (error) {
+    console.error("Following attendees fetch error:", error);
+    res.status(500).json({ message: "Server error while loading followed attendees." });
       .populate("userId", "name username email avatar");
 
     const attendees = records
