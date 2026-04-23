@@ -91,7 +91,6 @@ export const serializePublicUser = (user, stats = {}) => ({
   createdEventsCount: Number(stats.createdEventsCount || 0),
   followersCount: Number(stats.followersCount ?? user.followers?.length ?? 0),
   followingCount: Number(stats.followingCount ?? user.following?.length ?? 0),
-  isMock: Boolean(stats.isMock),
 });
 
 export const serializeUser = (user, stats = {}) => {
@@ -115,6 +114,5 @@ export const serializeUser = (user, stats = {}) => {
       : [],
     needsInterestsSelection: !hasCompletedOnboarding,
     hasCompletedOnboarding,
-    isMock: Boolean(stats.isMock),
   };
 };

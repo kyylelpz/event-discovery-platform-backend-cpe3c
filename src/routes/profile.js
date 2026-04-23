@@ -1,7 +1,6 @@
 import express from "express";
 import CreatedEvent from "../models/CreatedEvent.js";
 import MockEvent from "../models/MockEvent.js";
-import MockUser from "../models/MockUser.js";
 import protect from "../middleware/protect.js";
 import User from "../models/User.js";
 import {
@@ -17,13 +16,6 @@ import { cloudinary, uploadAvatarImage } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
-const getCreatedEventsCount = async (userId) => {
-  const [createdCount, mockCount] = await Promise.all([
-    CreatedEvent.countDocuments({ userId }),
-    MockEvent.countDocuments({ hostUserId: userId }),
-  ]);
-
-  return createdCount + mockCount;
 const getCreatedEventsCount = async (user) => {
   if (String(user?.source || "").trim().toLowerCase() === "mock") {
     return MockEvent.countDocuments({
@@ -101,15 +93,12 @@ const updateCurrentProfile = async (req, res) => {
       }
 
       if (nextUsername && nextUsername !== user.username) {
-        const [existingUser, existingMockUser] = await Promise.all([
-          User.findOne({
-            username: nextUsername,
-            _id: { $ne: user._id },
-          }),
-          MockUser.findOne({ username: nextUsername }),
-        ]);
+        const existingUser = await User.findOne({
+          username: nextUsername,
+          _id: { $ne: user._id },
+        });
 
-        if (existingUser || existingMockUser) {
+        if (existingUser) {
           return res.status(400).json({ message: "That username is already in use." });
         }
 
@@ -193,40 +182,21 @@ router.put("/me", protect, uploadAvatarImage, updateCurrentProfile);
 
 router.get("/:username", async (req, res) => {
   try {
-    const normalizedUsername = String(req.params.username || "").trim().toLowerCase();
-    const [user, mockUser] = await Promise.all([
-      findUserByUsername(normalizedUsername),
-      MockUser.findOne({ username: normalizedUsername }),
-    ]);
     await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
 
     const user = await findUserByUsername(req.params.username);
 
-    if (!user && !mockUser) {
+    if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
 
-    if (user) {
-      const createdEventsCount = await getCreatedEventsCount(user._id);
     const createdEventsCount = await getCreatedEventsCount(user);
 
-      return res.json({
-        user: serializePublicUser(user, {
-          createdEventsCount,
-          followersCount: user.followers?.length || 0,
-          followingCount: user.following?.length || 0,
-        }),
-      });
-    }
-
-    const createdEventsCount = await MockEvent.countDocuments({ hostUserId: mockUser._id });
-
-    return res.json({
-      user: serializePublicUser(mockUser, {
+    res.json({
+      user: serializePublicUser(user, {
         createdEventsCount,
-        followersCount: 0,
-        followingCount: 0,
-        isMock: true,
+        followersCount: user.followers?.length || 0,
+        followingCount: user.following?.length || 0,
       }),
     });
   } catch (error) {
