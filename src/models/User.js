@@ -66,6 +66,11 @@ const userSchema = new mongoose.Schema(
       type: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
       default: [],
     },
+    source: {
+      type: String,
+      default: "user",
+      trim: true,
+    },
     isEmailVerified: {
       type: Boolean,
       default: false 
@@ -83,6 +88,10 @@ const userSchema = new mongoose.Schema(
       default: "",
     },
     passwordResetExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    lastSeededAt: {
       type: Date,
       default: null,
     },

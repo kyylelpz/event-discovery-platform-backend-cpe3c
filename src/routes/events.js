@@ -11,6 +11,7 @@ import {
   getMockEventCatalogStatus,
   getStoredMockEvents,
 } from "../services/mockEventCatalog.js";
+import { ensureMockUserCatalogSeeded } from "../services/mockUserCatalog.js";
 import {
   getEventCatalogStatus,
   getStoredEvents,
@@ -304,6 +305,8 @@ router.get("/created/me", protect, async (req, res) => {
 
 router.get("/created/by/:username", async (req, res) => {
   try {
+    await Promise.all([ensureMockUserCatalogSeeded(), ensureMockEventCatalogSeeded()]);
+
     const username = String(req.params.username || "").trim().toLowerCase();
 
     if (!username) {
@@ -317,7 +320,11 @@ router.get("/created/by/:username", async (req, res) => {
     }
 
     const [events, venues] = await Promise.all([
-      loadCreatedEvents({ userId: user._id }),
+      String(user?.source || "").trim().toLowerCase() === "mock"
+        ? MockEvent.find({ source: "mock", createdBy: username })
+            .sort({ updatedAt: -1, title: 1 })
+            .lean()
+        : loadCreatedEvents({ userId: user._id }),
       Venue.find({}).lean(),
     ]);
     const venueLookup = buildVenueLookup(venues);
@@ -325,7 +332,9 @@ router.get("/created/by/:username", async (req, res) => {
     res.json({
       success: true,
       data: events.map((event) =>
-        serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
+        String(user?.source || "").trim().toLowerCase() === "mock"
+          ? serializeStoredEvent(event, resolveVenueMetadata(event, venueLookup))
+          : serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
       ),
     });
   } catch (err) {

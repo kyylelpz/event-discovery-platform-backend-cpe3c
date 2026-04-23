@@ -245,6 +245,8 @@ const attachAuthCookie = (res, token) => {
   res.cookie("token", token, buildCookieOptions());
 };
 
+const isMockAccount = (user) => String(user?.source || "").trim().toLowerCase() === "mock";
+
 const serializeRedirectPayload = (value) =>
   Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64url");
 
@@ -449,6 +451,12 @@ router.post("/login", async (req, res) => {
       return res.status(404).json({ message: "Account not found. Please sign up first!" });
     }
 
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile is available for browsing only and cannot sign in.",
+      });
+    }
+
     if (!user.password && user.provider === "google") {
       return res.status(400).json({
         message: "This account uses Google Sign-In. Please continue with Google.",
@@ -508,6 +516,12 @@ router.post("/verify-email", async (req, res) => {
 
     if (!user || user.provider !== "local") {
       return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support email verification.",
+      });
     }
 
     if (user.isEmailVerified) {
@@ -578,6 +592,12 @@ router.post("/verify-email/resend", async (req, res) => {
       return res.status(404).json({ message: "Account not found." });
     }
 
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support email verification.",
+      });
+    }
+
     if (user.isEmailVerified) {
       return res.status(200).json({ message: "Email already verified." });
     }
@@ -615,6 +635,12 @@ router.post("/forgot-password", async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support password reset.",
+      });
     }
 
     if (!user.password && user.provider === "google") {
@@ -690,6 +716,12 @@ router.post("/reset-password", async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ message: "Account not found." });
+    }
+
+    if (isMockAccount(user)) {
+      return res.status(403).json({
+        message: "This demo profile does not support password reset.",
+      });
     }
 
     if (!user.password && user.provider === "google") {

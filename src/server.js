@@ -13,6 +13,7 @@ import interactionRoutes from "./routes/interactions.js";
 import profileRoutes from "./routes/profile.js";
 import userRoutes from "./routes/users.js";
 import { syncMockEventCatalog } from "./services/mockEventCatalog.js";
+import { syncMockUserCatalog } from "./services/mockUserCatalog.js";
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -71,4 +72,8 @@ app.listen(PORT, () => {
 
 void syncMockEventCatalog({ reason: "startup" }).catch((error) => {
   console.error("Unable to sync the mock event catalog:", error);
+});
+
+void syncMockUserCatalog({ reason: "startup" }).catch((error) => {
+  console.error("Unable to sync the mock user catalog:", error);
 });
