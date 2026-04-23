@@ -119,6 +119,7 @@ const resolveVenueMetadata = (event, venueLookup) => {
 const serializeCreatedEvent = (event, venueMetadata = {}) => ({
   id: event.eventId,
   eventId: event.eventId,
+  ownerId: String(event.userId || ""),
   title: event.title,
   description: event.description || "",
   category: event.category || "Community",
@@ -193,6 +194,139 @@ const serializeStoredEvent = (event, venueMetadata = {}) => ({
 
 const loadCreatedEvents = async (query = {}) =>
   CreatedEvent.find(query).sort({ updatedAt: -1, title: 1 }).lean();
+
+const parseCreatedEventRequestBody = (body = {}) => {
+  const parsedVenueRating = Number(body.venueRating || 0);
+  const parsedVenueReviewCount = Number(body.venueReviewCount || 0);
+  const parsedVenueLat = Number(body.venueLatitude);
+  const parsedVenueLng = Number(body.venueLongitude);
+  const venueName = String(body.venue || body.location || "").trim();
+  const venueLocation = String(
+    body.location || body.address || body.venue || body.province || "",
+  ).trim();
+  const venueGoogleMapsUrl = String(
+    body.googleMapsUrl || body.venueGoogleMapsUrl || "",
+  ).trim();
+  const venuePlaceId = String(body.venuePlaceId || "").trim();
+
+  return {
+    parsedVenueRating,
+    parsedVenueReviewCount,
+    parsedVenueLat,
+    parsedVenueLng,
+    venueName,
+    venueLocation,
+    venueGoogleMapsUrl,
+    venuePlaceId,
+  };
+};
+
+const upsertVenueRecord = async ({
+  venueName,
+  venueLocation,
+  venueGoogleMapsUrl,
+  venuePlaceId,
+  parsedVenueRating,
+  parsedVenueReviewCount,
+  parsedVenueLat,
+  parsedVenueLng,
+}) => {
+  if (!venueName) {
+    return null;
+  }
+
+  const venueQuery = venuePlaceId
+    ? { google_maps_place_id: venuePlaceId }
+    : { venue_name: venueName };
+
+  return Venue.findOneAndUpdate(
+    venueQuery,
+    {
+      $set: {
+        venue_name: venueName,
+        location: venueLocation,
+        google_maps_link: venueGoogleMapsUrl,
+        google_maps_place_id: venuePlaceId,
+        rating: Number.isFinite(parsedVenueRating) ? parsedVenueRating : 0,
+        reviewCount: Number.isFinite(parsedVenueReviewCount)
+          ? parsedVenueReviewCount
+          : 0,
+        coordinates:
+          Number.isFinite(parsedVenueLat) && Number.isFinite(parsedVenueLng)
+            ? {
+                lat: parsedVenueLat,
+                lng: parsedVenueLng,
+              }
+            : undefined,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    },
+  );
+};
+
+const buildCreatedEventUpdate = ({
+  body = {},
+  user,
+  storedVenue,
+  uploadedImageUrl,
+}) => {
+  const {
+    parsedVenueRating,
+    parsedVenueReviewCount,
+    parsedVenueLat,
+    parsedVenueLng,
+    venueName,
+    venueLocation,
+    venueGoogleMapsUrl,
+    venuePlaceId,
+  } = parseCreatedEventRequestBody(body);
+
+  return {
+    createdBy: user.username || "",
+    creatorName: user.name || "",
+    creatorAvatar: user.avatar || "",
+    title: String(body.title || "").trim(),
+    province: String(body.province || "").trim(),
+    location:
+      String(
+        body.location || body.address || body.venue || body.province || "",
+      ).trim() || "Philippines",
+    venue: venueName,
+    address: String(body.address || "").trim(),
+    venueGoogleMapsUrl:
+      venueGoogleMapsUrl || storedVenue?.google_maps_link || "",
+    venuePlaceId: venuePlaceId || storedVenue?.google_maps_place_id || "",
+    venueRating:
+      Number.isFinite(parsedVenueRating) && parsedVenueRating > 0
+        ? parsedVenueRating
+        : Number(storedVenue?.rating || 0),
+    venueReviewCount:
+      Number.isFinite(parsedVenueReviewCount) && parsedVenueReviewCount > 0
+        ? parsedVenueReviewCount
+        : Number(storedVenue?.reviewCount || 0),
+    venueCoordinates:
+      Number.isFinite(parsedVenueLat) && Number.isFinite(parsedVenueLng)
+        ? {
+            lat: parsedVenueLat,
+            lng: parsedVenueLng,
+          }
+        : storedVenue?.coordinates || null,
+    startDate: String(body.date || body.startDate || "").trim(),
+    timeLabel: String(body.time || body.timeLabel || "").trim(),
+    category: String(body.category || "Community").trim() || "Community",
+    description: String(body.description || "").trim(),
+    eventUrl: String(body.eventUrl || "").trim(),
+    organizer:
+      String(body.organizer || user.name || "Community Host").trim() ||
+      "Community Host",
+    rawPayload: body,
+    ...(uploadedImageUrl ? { imageUrl: uploadedImageUrl } : {}),
+  };
+};
 
 router.get("/status", async (req, res) => {
   try {
@@ -345,7 +479,6 @@ router.get("/created/by/:username", async (req, res) => {
 router.post("/create", protect, uploadEventImage, async (req, res) => {
   try {
     let imageUrl = "";
-    let cloudinaryId = "";
 
     if (req.file) {
       const result = await new Promise((resolve, reject) => {
@@ -360,57 +493,12 @@ router.post("/create", protect, uploadEventImage, async (req, res) => {
       });
 
       imageUrl = result.secure_url;
-      cloudinaryId = result.public_id;
     }
-
-    const parsedVenueRating = Number(req.body.venueRating || 0);
-    const parsedVenueReviewCount = Number(req.body.venueReviewCount || 0);
-    const parsedVenueLat = Number(req.body.venueLatitude);
-    const parsedVenueLng = Number(req.body.venueLongitude);
-    const venueName = String(req.body.venue || req.body.location || "").trim();
-    const venueLocation = String(
-      req.body.location || req.body.address || req.body.venue || req.body.province || "",
-    ).trim();
-    const venueGoogleMapsUrl = String(
-      req.body.googleMapsUrl || req.body.venueGoogleMapsUrl || "",
-    ).trim();
-    const venuePlaceId = String(req.body.venuePlaceId || "").trim();
+    const venueRequestData = parseCreatedEventRequestBody(req.body);
 
     let storedVenue = null;
 
-    if (venueName) {
-      const venueQuery = venuePlaceId
-        ? { google_maps_place_id: venuePlaceId }
-        : { venue_name: venueName };
-
-      storedVenue = await Venue.findOneAndUpdate(
-        venueQuery,
-        {
-          $set: {
-            venue_name: venueName,
-            location: venueLocation,
-            google_maps_link: venueGoogleMapsUrl,
-            google_maps_place_id: venuePlaceId,
-            rating: Number.isFinite(parsedVenueRating) ? parsedVenueRating : 0,
-            reviewCount: Number.isFinite(parsedVenueReviewCount)
-              ? parsedVenueReviewCount
-              : 0,
-            coordinates:
-              Number.isFinite(parsedVenueLat) && Number.isFinite(parsedVenueLng)
-                ? {
-                    lat: parsedVenueLat,
-                    lng: parsedVenueLng,
-                  }
-                : undefined,
-          },
-        },
-        {
-          new: true,
-          upsert: true,
-          setDefaultsOnInsert: true,
-        },
-      );
-    }
+    storedVenue = await upsertVenueRecord(venueRequestData);
 
     const generatedEventId = [
       "created",
@@ -422,44 +510,15 @@ router.post("/create", protect, uploadEventImage, async (req, res) => {
       .join("-");
     const newEvent = await CreatedEvent.create({
       userId: req.user._id,
-      createdBy: req.user.username || "",
-      creatorName: req.user.name || "",
-      creatorAvatar: req.user.avatar || "",
-      title: req.body.title,
-      province: req.body.province || "",
-      location:
-        req.body.location || req.body.address || req.body.venue || req.body.province,
-      venue: venueName,
-      address: req.body.address || "",
-      venueGoogleMapsUrl:
-        venueGoogleMapsUrl || storedVenue?.google_maps_link || "",
-      venuePlaceId: venuePlaceId || storedVenue?.google_maps_place_id || "",
-      venueRating:
-        Number.isFinite(parsedVenueRating) && parsedVenueRating > 0
-          ? parsedVenueRating
-          : Number(storedVenue?.rating || 0),
-      venueReviewCount:
-        Number.isFinite(parsedVenueReviewCount) && parsedVenueReviewCount > 0
-          ? parsedVenueReviewCount
-          : Number(storedVenue?.reviewCount || 0),
-      venueCoordinates:
-        Number.isFinite(parsedVenueLat) && Number.isFinite(parsedVenueLng)
-          ? {
-              lat: parsedVenueLat,
-              lng: parsedVenueLng,
-            }
-          : storedVenue?.coordinates || null,
-      startDate: req.body.date || req.body.startDate || "",
-      timeLabel: req.body.time || req.body.timeLabel || "",
-      category: req.body.category || "Community",
-      description: req.body.description || "",
-      eventUrl: req.body.eventUrl || "",
-      imageUrl: imageUrl || req.body.imageUrl || "",
+      ...buildCreatedEventUpdate({
+        body: req.body,
+        user: req.user,
+        storedVenue,
+        uploadedImageUrl: imageUrl || String(req.body.imageUrl || "").trim(),
+      }),
       eventId: generatedEventId,
-      organizer: req.body.organizer || req.user.name || "Community Host",
       source: "created",
       status: "published",
-      rawPayload: req.body,
     });
 
     res.status(201).json({
@@ -468,6 +527,69 @@ router.post("/create", protect, uploadEventImage, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.put("/:eventId", protect, uploadEventImage, async (req, res) => {
+  try {
+    const eventId = String(req.params.eventId || "").trim();
+
+    if (!eventId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Event ID is required." });
+    }
+
+    const existingEvent = await CreatedEvent.findOne({ eventId });
+
+    if (!existingEvent) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Created event not found." });
+    }
+
+    if (String(existingEvent.userId) !== String(req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the creator of this event can edit it.",
+      });
+    }
+
+    let imageUrl = "";
+
+    if (req.file) {
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "user_events" },
+          (error, uploadResult) => {
+            if (uploadResult) resolve(uploadResult);
+            else reject(error);
+          },
+        );
+        stream.end(req.file.buffer);
+      });
+
+      imageUrl = result.secure_url;
+    }
+
+    const venueRequestData = parseCreatedEventRequestBody(req.body);
+    const storedVenue = await upsertVenueRecord(venueRequestData);
+    const nextUpdate = buildCreatedEventUpdate({
+      body: req.body,
+      user: req.user,
+      storedVenue,
+      uploadedImageUrl: imageUrl,
+    });
+
+    Object.assign(existingEvent, nextUpdate);
+    await existingEvent.save();
+
+    return res.json({
+      success: true,
+      data: serializeCreatedEvent(existingEvent.toObject(), getVenueMetadata(storedVenue)),
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
