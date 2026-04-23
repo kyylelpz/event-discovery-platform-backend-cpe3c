@@ -9,6 +9,7 @@ import {
   serializePublicUser,
   serializeUser,
 } from "../utils/userHelpers.js";
+import { cloudinary, upload } from "../utils/cloudinary.js";
 
 const router = express.Router();
 
@@ -118,6 +119,30 @@ const updateCurrentProfile = async (req, res) => {
       user.avatar = req.body.avatar.trim();
     }
 
+    if (req.file?.buffer) {
+      const uploadResult = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            folder: "eventcinity/profile-pictures",
+            public_id: `user-${user._id}-${Date.now()}`,
+            resource_type: "image",
+          },
+          (error, result) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+
+            resolve(result);
+          },
+        );
+
+        stream.end(req.file.buffer);
+      });
+
+      user.avatar = String(uploadResult?.secure_url || "").trim() || user.avatar;
+    }
+
     if (Array.isArray(req.body.interests)) {
       user.interests = normalizeInterestList(req.body.interests);
     }
@@ -141,8 +166,8 @@ const updateCurrentProfile = async (req, res) => {
 router.get("/", protect, sendCurrentProfile);
 router.get("/me", protect, sendCurrentProfile);
 
-router.put("/", protect, updateCurrentProfile);
-router.put("/me", protect, updateCurrentProfile);
+router.put("/", protect, upload.single("avatar"), updateCurrentProfile);
+router.put("/me", protect, upload.single("avatar"), updateCurrentProfile);
 
 router.get("/:username", async (req, res) => {
   try {
