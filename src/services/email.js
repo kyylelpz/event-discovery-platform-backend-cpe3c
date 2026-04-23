@@ -19,6 +19,22 @@ const getVerificationEmailMarkup = ({ name, code }) => `
   </div>
 `;
 
+const getPasswordResetEmailMarkup = ({ name, code }) => `
+  <div style="font-family: Arial, sans-serif; padding: 24px; color: #1f1a17;">
+    <h2 style="margin: 0 0 12px;">Reset your Eventcinity password</h2>
+    <p style="margin: 0 0 16px;">Hi ${name || "there"},</p>
+    <p style="margin: 0 0 16px;">
+      Use the reset code below to create a new password for your Eventcinity account.
+    </p>
+    <div style="margin: 0 0 20px; padding: 14px 18px; border-radius: 12px; background: #f3eee6; font-size: 28px; font-weight: 700; letter-spacing: 0.18em; text-align: center;">
+      ${code}
+    </div>
+    <p style="margin: 0; color: #6b655d;">
+      This code expires in 15 minutes. If you did not request this, you can ignore this email.
+    </p>
+  </div>
+`;
+
 const createEmailError = (code, message, cause = null) => {
   const error = new Error(message);
   error.code = code;
@@ -219,6 +235,16 @@ export const isEmailDeliveryRequestError = (error) =>
 export const sendVerificationEmail = async ({ email, name, code }) => {
   const subject = "Your Eventcinity verification code";
   const html = getVerificationEmailMarkup({ name, code });
+  return sendAuthCodeEmail({ email, subject, html });
+};
+
+export const sendPasswordResetEmail = async ({ email, name, code }) => {
+  const subject = "Your Eventcinity password reset code";
+  const html = getPasswordResetEmailMarkup({ name, code });
+  return sendAuthCodeEmail({ email, subject, html });
+};
+
+const sendAuthCodeEmail = async ({ email, subject, html }) => {
   const activeProvider = getConfiguredProvider();
 
   if (activeProvider === EMAIL_PROVIDER_RESEND) {
