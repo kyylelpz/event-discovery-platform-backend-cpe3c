@@ -12,6 +12,7 @@ import eventRoutes from "./routes/events.js";
 import interactionRoutes from "./routes/interactions.js";
 import profileRoutes from "./routes/profile.js";
 import userRoutes from "./routes/users.js";
+import { syncMockEventCatalog } from "./services/mockEventCatalog.js";
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -66,4 +67,8 @@ app.get("/api/health", (req, res) => {
 const PORT = process.env.PORT || process.env.APP_PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+void syncMockEventCatalog({ reason: "startup" }).catch((error) => {
+  console.error("Unable to sync the mock event catalog:", error);
 });

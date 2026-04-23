@@ -6,6 +6,11 @@ import SavedEvent from "../models/SavedEvent.js";
 import User from "../models/User.js";
 import Venue from "../models/Venue.js";
 import {
+  ensureMockEventCatalogSeeded,
+  getMockEventCatalogStatus,
+  getStoredMockEvents,
+} from "../services/mockEventCatalog.js";
+import {
   getEventCatalogStatus,
   getStoredEvents,
   refreshEventCatalog,
@@ -103,7 +108,7 @@ const resolveVenueMetadata = (event, venueLookup) => {
 };
 
 const serializeCreatedEvent = (event, venueMetadata = {}) => ({
-  id: String(event._id),
+  id: event.eventId,
   eventId: event.eventId,
   title: event.title,
   description: event.description || "",
@@ -145,8 +150,18 @@ const loadCreatedEvents = async (query = {}) =>
 
 router.get("/status", async (req, res) => {
   try {
-    const status = await getEventCatalogStatus();
-    res.json({ success: true, data: status });
+    await ensureMockEventCatalogSeeded();
+    const [status, mockStatus] = await Promise.all([
+      getEventCatalogStatus(),
+      getMockEventCatalogStatus(),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        ...status,
+        mockEvents: mockStatus,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -173,19 +188,25 @@ router.get("/", async (req, res) => {
   try {
     const location = req.query.location || "All Philippines";
 
-    const [events, createdEvents, totalCount, totalCreatedCount, venues] =
+    const [events, createdEvents, mockEvents, totalCount, totalCreatedCount, venues] =
       await Promise.all([
         getStoredEvents(location),
         loadCreatedEvents(buildCreatedEventsQuery({ location })),
+        getStoredMockEvents(location),
         Event.countDocuments(),
         CreatedEvent.countDocuments(),
         Venue.find({}).lean(),
       ]);
+    const { storedCount: totalMockCount } = await getMockEventCatalogStatus();
     const venueLookup = buildVenueLookup(venues);
     const mergedEvents = [
       ...createdEvents.map((event) =>
         serializeCreatedEvent(event, resolveVenueMetadata(event, venueLookup)),
       ),
+      ...mockEvents.map((event) => ({
+        ...event,
+        ...resolveVenueMetadata(event, venueLookup),
+      })),
       ...events.map((event) => ({
         ...event,
         ...resolveVenueMetadata(event, venueLookup),
@@ -211,7 +232,7 @@ router.get("/", async (req, res) => {
       success: true,
       data: mergedEvents,
       count: mergedEvents.length,
-      totalCount: totalCount + totalCreatedCount,
+      totalCount: totalCount + totalCreatedCount + totalMockCount,
       source: "database",
     });
   } catch (err) {
