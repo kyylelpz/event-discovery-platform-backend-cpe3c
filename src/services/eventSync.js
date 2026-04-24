@@ -1,14 +1,28 @@
 import { getJson } from "serpapi";
 import Event from "../models/Event.js";
+import EventSyncState from "../models/EventSyncState.js";
 
 const DEFAULT_LOCATION = process.env.EVENTS_REFRESH_LOCATION || "Philippines";
 const DEFAULT_QUERY =
   process.env.EVENTS_REFRESH_QUERY || "Events in the Philippines";
-const FALLBACK_QUERY =
-  process.env.EVENTS_FALLBACK_QUERY || "Concerts in the Philippines";
 const EVENTS_PER_PAGE = 10;
-const MAX_RESULTS = Number(process.env.EVENTS_REFRESH_MAX_RESULTS || 200);
-const MAX_PAGES = Math.max(1, Math.ceil(MAX_RESULTS / EVENTS_PER_PAGE));
+const PHILIPPINE_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+const PHILIPPINE_TIME_ZONE = "Asia/Manila";
+const EVENT_SYNC_STATE_KEY = "serpapi-google-events";
+const DAILY_CREDIT_LIMIT = Math.max(
+  1,
+  Number(process.env.EVENTS_DAILY_CREDIT_LIMIT || 5),
+);
+const AUTO_REFRESH_ENABLED = process.env.EVENTS_AUTO_REFRESH_ENABLED !== "false";
+const AUTO_REFRESH_ON_STARTUP =
+  process.env.EVENTS_AUTO_REFRESH_ON_STARTUP !== "false";
+const DEFAULT_SEARCH_FILTERS = String(
+  process.env.EVENTS_REFRESH_FILTERS ||
+    "date:today|date:tomorrow|date:week|date:next_week|date:month",
+)
+  .split("|")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const TARGET_IMAGE_WIDTH = Number(process.env.EVENTS_IMAGE_WIDTH || 1600);
 const SOURCE_IMAGE_FETCH_TIMEOUT_MS = Number(
   process.env.EVENT_SOURCE_IMAGE_TIMEOUT_MS || 8000,
@@ -196,10 +210,12 @@ const refreshState = {
   lastQuery: DEFAULT_QUERY,
   lastResultCount: 0,
   lastPageStarts: [],
+  nextScheduledAt: null,
 };
 
 let refreshPromise = null;
 const sourceImageCache = new Map();
+let scheduledRefreshTimer = null;
 
 const slugify = (value) =>
   String(value || "event")
@@ -208,6 +224,90 @@ const slugify = (value) =>
     .replace(/(^-|-$)/g, "");
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const getPhilippineDateKey = (date = new Date()) => {
+  const shiftedDate = new Date(date.getTime() + PHILIPPINE_TIME_OFFSET_MS);
+  const year = shiftedDate.getUTCFullYear();
+  const month = String(shiftedDate.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shiftedDate.getUTCDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
+
+const getMillisecondsUntilNextPhilippineMidnight = (date = new Date()) => {
+  const shiftedDate = new Date(date.getTime() + PHILIPPINE_TIME_OFFSET_MS);
+  const nextMidnightShiftedMs = Date.UTC(
+    shiftedDate.getUTCFullYear(),
+    shiftedDate.getUTCMonth(),
+    shiftedDate.getUTCDate() + 1,
+    0,
+    0,
+    0,
+    0,
+  );
+
+  return Math.max(1_000, nextMidnightShiftedMs - shiftedDate.getTime());
+};
+
+const getNextPhilippineMidnightDate = (date = new Date()) =>
+  new Date(date.getTime() + getMillisecondsUntilNextPhilippineMidnight(date));
+
+const getSearchPlanKey = ({ query, htichips = "" }) =>
+  `${String(query || "").trim()}::${String(htichips || "").trim() || "all"}`;
+
+const buildSearchPlans = (query = DEFAULT_QUERY) =>
+  DEFAULT_SEARCH_FILTERS.slice(0, DAILY_CREDIT_LIMIT).map((htichips) => ({
+    query,
+    htichips,
+    start: 0,
+    key: getSearchPlanKey({ query, htichips }),
+  }));
+
+const getDailyRequestedResults = () => DAILY_CREDIT_LIMIT * EVENTS_PER_PAGE;
+
+const ensureUniqueStrings = (values = []) =>
+  Array.from(
+    new Set(
+      values
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+const loadSyncState = async () =>
+  EventSyncState.findOneAndUpdate(
+    { key: EVENT_SYNC_STATE_KEY },
+    {
+      $setOnInsert: {
+        key: EVENT_SYNC_STATE_KEY,
+        budgetDate: getPhilippineDateKey(),
+        creditsUsedToday: 0,
+        attemptedSearchKeys: [],
+        nextScheduledAt: getNextPhilippineMidnightDate(),
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    },
+  );
+
+const normalizeSyncStateBudget = async (syncState) => {
+  const todayKey = getPhilippineDateKey();
+
+  if (syncState.budgetDate === todayKey) {
+    return syncState;
+  }
+
+  syncState.budgetDate = todayKey;
+  syncState.creditsUsedToday = 0;
+  syncState.attemptedSearchKeys = [];
+  syncState.nextScheduledAt = getNextPhilippineMidnightDate();
+  await syncState.save();
+
+  return syncState;
+};
 
 const asText = (value) => {
   if (Array.isArray(value)) {
@@ -881,68 +981,31 @@ const normalizeSerpApiEvent = (rawEvent, query, index) => {
 };
 
 const fetchSerpApiEventsForQuery = async (query) => {
-  const allEvents = [];
-  const pageStarts = [];
+  const results = await getJson({
+    engine: "google_events",
+    q: query.query,
+    location: DEFAULT_LOCATION,
+    hl: "en",
+    gl: "ph",
+    start: query.start ?? 0,
+    htichips: query.htichips || undefined,
+    no_cache: false,
+    api_key: process.env.SERPAPI_KEY,
+  });
 
-  for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex += 1) {
-    const start = pageIndex * EVENTS_PER_PAGE;
-
-    const results = await getJson({
-      engine: "google_events",
-      q: query,
-      location: DEFAULT_LOCATION,
-      hl: "en",
-      gl: "ph",
-      start,
-      api_key: process.env.SERPAPI_KEY,
-    });
-
-    const pageEvents = Array.isArray(results?.events_results)
-      ? results.events_results
-      : [];
-
-    pageStarts.push(start);
-    allEvents.push(...pageEvents);
-
-    // Stop when SerpAPI has no more pages or returns a partial final page.
-    if (
-      pageEvents.length < EVENTS_PER_PAGE ||
-      allEvents.length >= MAX_RESULTS
-    ) {
-      break;
-    }
-  }
+  const pageEvents = Array.isArray(results?.events_results)
+    ? results.events_results
+    : [];
 
   return {
-    events: allEvents.slice(0, MAX_RESULTS),
-    pageStarts,
-  };
-};
-
-const fetchSerpApiEvents = async (query = DEFAULT_QUERY) => {
-  const attemptedQueries = [];
-  const queriesToTry = Array.from(
-    new Set([query, FALLBACK_QUERY].filter(Boolean)),
-  );
-
-  for (const queryToTry of queriesToTry) {
-    attemptedQueries.push(queryToTry);
-    const result = await fetchSerpApiEventsForQuery(queryToTry);
-
-    if (result.events.length > 0) {
-      return {
-        ...result,
-        resolvedQuery: queryToTry,
-        attemptedQueries,
-      };
-    }
-  }
-
-  return {
-    events: [],
-    pageStarts: [],
-    resolvedQuery: query,
-    attemptedQueries,
+    events: pageEvents.slice(0, EVENTS_PER_PAGE),
+    pageStarts: [query.start ?? 0],
+    searchPlan: {
+      query: query.query,
+      htichips: query.htichips || "",
+      start: query.start ?? 0,
+      count: pageEvents.length,
+    },
   };
 };
 
@@ -950,6 +1013,10 @@ export const refreshEventCatalog = async ({
   query = DEFAULT_QUERY,
   reason = "manual",
 } = {}) => {
+  if (!process.env.SERPAPI_KEY) {
+    throw new Error("SERPAPI_KEY is required to refresh the event catalog.");
+  }
+
   if (refreshPromise) {
     return refreshPromise;
   }
@@ -959,14 +1026,75 @@ export const refreshEventCatalog = async ({
   refreshState.lastQuery = query;
 
   refreshPromise = (async () => {
-    const {
-      events: rawEvents,
-      pageStarts,
-      resolvedQuery,
-      attemptedQueries,
-    } = await fetchSerpApiEvents(query);
+    const syncState = await normalizeSyncStateBudget(await loadSyncState());
+    const searchPlans = buildSearchPlans(query);
+    const availableCredits = Math.max(
+      0,
+      DAILY_CREDIT_LIMIT - Number(syncState.creditsUsedToday || 0),
+    );
+    const attemptedSearchKeys = new Set(syncState.attemptedSearchKeys || []);
+    const plansToRun = searchPlans
+      .filter((searchPlan) => !attemptedSearchKeys.has(searchPlan.key))
+      .slice(0, availableCredits);
+
+    if (plansToRun.length === 0) {
+      refreshState.lastError = null;
+      refreshState.lastResultCount = 0;
+      refreshState.lastPageStarts = [];
+      refreshState.lastQuery = query;
+      refreshState.nextScheduledAt =
+        syncState.nextScheduledAt?.toISOString?.() ||
+        getNextPhilippineMidnightDate().toISOString();
+
+      return {
+        query,
+        reason,
+        attemptedQueries: [],
+        requestedCount: getDailyRequestedResults(),
+        fetchedCount: 0,
+        count: 0,
+        insertedCount: 0,
+        updatedCount: 0,
+        pageStarts: [],
+        searchPlans: [],
+        refreshedAt: syncState.lastSuccessAt?.toISOString?.() || null,
+        skipped: true,
+        skipReason:
+          availableCredits <= 0
+            ? "Daily SerpAPI credit budget already reached."
+            : "All planned searches already ran for today.",
+        budgetDate: syncState.budgetDate,
+        creditsUsedToday: syncState.creditsUsedToday,
+        dailyCreditLimit: DAILY_CREDIT_LIMIT,
+      };
+    }
+
+    const rawEvents = [];
+    const pageStarts = [];
+    const executedSearchPlans = [];
+    const attemptedQueries = [];
+
+    for (const searchPlan of plansToRun) {
+      syncState.creditsUsedToday = Math.min(
+        DAILY_CREDIT_LIMIT,
+        Number(syncState.creditsUsedToday || 0) + 1,
+      );
+      syncState.attemptedSearchKeys = ensureUniqueStrings([
+        ...(syncState.attemptedSearchKeys || []),
+        searchPlan.key,
+      ]);
+      syncState.lastAttemptAt = new Date();
+      await syncState.save();
+
+      const result = await fetchSerpApiEventsForQuery(searchPlan);
+      rawEvents.push(...result.events);
+      pageStarts.push(...result.pageStarts);
+      executedSearchPlans.push(result.searchPlan);
+      attemptedQueries.push(searchPlan.query);
+    }
+
     const normalizedEvents = rawEvents
-      .map((event, index) => normalizeSerpApiEvent(event, resolvedQuery, index))
+      .map((event, index) => normalizeSerpApiEvent(event, query, index))
       .filter((event) => event.title);
     const dedupedEvents = Array.from(
       new Map(normalizedEvents.map((event) => [event.eventId, event])).values(),
@@ -977,35 +1105,92 @@ export const refreshEventCatalog = async ({
       enrichEventWithSourceImages,
     );
 
-    await Event.deleteMany({ source: "serpapi" });
+    const existingEventIds = new Set(
+      (
+        await Event.find({
+          eventId: { $in: enrichedEvents.map((event) => event.eventId) },
+        })
+          .select("eventId")
+          .lean()
+      ).map((event) => String(event.eventId || "").trim()),
+    );
 
     if (enrichedEvents.length > 0) {
-      await Event.insertMany(enrichedEvents, { ordered: false });
+      await Event.bulkWrite(
+        enrichedEvents.map((event) => ({
+          updateOne: {
+            filter: { eventId: event.eventId },
+            update: {
+              $set: event,
+              $currentDate: {
+                updatedAt: true,
+              },
+            },
+            upsert: true,
+          },
+        })),
+        { ordered: false },
+      );
     }
 
-    refreshState.lastSuccessAt = new Date().toISOString();
+    const insertedCount = enrichedEvents.filter(
+      (event) => !existingEventIds.has(event.eventId),
+    ).length;
+    const updatedCount = enrichedEvents.length - insertedCount;
+    const refreshedAt = new Date();
+
+    syncState.lastSuccessAt = refreshedAt;
+    syncState.lastError = null;
+    syncState.lastQuery = query;
+    syncState.lastResultCount = enrichedEvents.length;
+    syncState.lastFetchedCount = rawEvents.length;
+    syncState.lastInsertedCount = insertedCount;
+    syncState.lastUpdatedCount = updatedCount;
+    syncState.lastPageStarts = pageStarts;
+    syncState.lastSearchPlans = executedSearchPlans;
+    syncState.nextScheduledAt = getNextPhilippineMidnightDate();
+    await syncState.save();
+
+    refreshState.lastSuccessAt = refreshedAt.toISOString();
     refreshState.lastError = null;
     refreshState.lastResultCount = enrichedEvents.length;
     refreshState.lastPageStarts = pageStarts;
-    refreshState.lastQuery = resolvedQuery;
+    refreshState.lastQuery = query;
+    refreshState.nextScheduledAt = syncState.nextScheduledAt.toISOString();
 
     console.log(
-      `[eventSync] Seeded ${enrichedEvents.length} events from SerpAPI (${reason}) using query "${resolvedQuery}"`,
+      `[eventSync] Synced ${enrichedEvents.length} SerpAPI events (${reason}) using ${executedSearchPlans.length} search plan(s)`,
     );
 
     return {
-      query: resolvedQuery,
+      query,
       attemptedQueries,
       reason,
-      requestedCount: MAX_RESULTS,
+      requestedCount: getDailyRequestedResults(),
       fetchedCount: rawEvents.length,
       count: enrichedEvents.length,
+      insertedCount,
+      updatedCount,
       pageStarts,
-      refreshedAt: refreshState.lastSuccessAt,
+      searchPlans: executedSearchPlans,
+      refreshedAt: refreshedAt.toISOString(),
+      skipped: false,
+      budgetDate: syncState.budgetDate,
+      creditsUsedToday: syncState.creditsUsedToday,
+      dailyCreditLimit: DAILY_CREDIT_LIMIT,
     };
   })()
     .catch((error) => {
       refreshState.lastError = error.message;
+      EventSyncState.findOneAndUpdate(
+        { key: EVENT_SYNC_STATE_KEY },
+        {
+          $set: {
+            lastError: error.message,
+            nextScheduledAt: getNextPhilippineMidnightDate(),
+          },
+        },
+      ).catch(() => {});
       console.error("[eventSync] Refresh failed:", error);
       throw error;
     })
@@ -1034,14 +1219,108 @@ export const getStoredEvents = async (location = "All Philippines") => {
 };
 
 export const getEventCatalogStatus = async () => {
+  const syncState = await normalizeSyncStateBudget(await loadSyncState());
   const storedCount = await Event.countDocuments();
 
   return {
     ...refreshState,
     storedCount,
-    maxResults: MAX_RESULTS,
-    fetchMode: "manual-only",
-    autoRefreshOnDeploy: false,
+    maxResults: getDailyRequestedResults(),
+    fetchMode: AUTO_REFRESH_ENABLED ? "startup-and-daily" : "manual-only",
+    autoRefreshOnDeploy: AUTO_REFRESH_ENABLED && AUTO_REFRESH_ON_STARTUP,
+    dailyCreditLimit: DAILY_CREDIT_LIMIT,
+    creditsUsedToday: Number(syncState.creditsUsedToday || 0),
+    budgetDate: syncState.budgetDate,
+    attemptedSearchCount: Array.isArray(syncState.attemptedSearchKeys)
+      ? syncState.attemptedSearchKeys.length
+      : 0,
+    lastSuccessAt: syncState.lastSuccessAt?.toISOString?.() || refreshState.lastSuccessAt,
+    lastAttemptAt: syncState.lastAttemptAt?.toISOString?.() || refreshState.lastAttemptAt,
+    lastError: syncState.lastError || refreshState.lastError,
+    lastQuery: syncState.lastQuery || refreshState.lastQuery,
+    lastResultCount: Number(syncState.lastResultCount || refreshState.lastResultCount || 0),
+    lastFetchedCount: Number(syncState.lastFetchedCount || 0),
+    lastInsertedCount: Number(syncState.lastInsertedCount || 0),
+    lastUpdatedCount: Number(syncState.lastUpdatedCount || 0),
+    lastPageStarts: Array.isArray(syncState.lastPageStarts)
+      ? syncState.lastPageStarts
+      : refreshState.lastPageStarts,
+    lastSearchPlans: Array.isArray(syncState.lastSearchPlans)
+      ? syncState.lastSearchPlans
+      : [],
+    nextScheduledAt:
+      syncState.nextScheduledAt?.toISOString?.() ||
+      refreshState.nextScheduledAt ||
+      getNextPhilippineMidnightDate().toISOString(),
+    timeZone: PHILIPPINE_TIME_ZONE,
     location: DEFAULT_LOCATION,
   };
+};
+
+const scheduleNextAutomaticRefresh = async () => {
+  if (!AUTO_REFRESH_ENABLED) {
+    refreshState.nextScheduledAt = null;
+    return;
+  }
+
+  const nextScheduledAt = getNextPhilippineMidnightDate();
+  refreshState.nextScheduledAt = nextScheduledAt.toISOString();
+
+  await EventSyncState.findOneAndUpdate(
+    { key: EVENT_SYNC_STATE_KEY },
+    {
+      $setOnInsert: {
+        key: EVENT_SYNC_STATE_KEY,
+        budgetDate: getPhilippineDateKey(),
+      },
+      $set: {
+        nextScheduledAt,
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    },
+  );
+
+  if (scheduledRefreshTimer) {
+    clearTimeout(scheduledRefreshTimer);
+  }
+
+  scheduledRefreshTimer = setTimeout(async () => {
+    try {
+      await refreshEventCatalog({ reason: "daily-midnight" });
+    } catch (error) {
+      console.error("[eventSync] Scheduled refresh failed:", error);
+    } finally {
+      await scheduleNextAutomaticRefresh();
+    }
+  }, getMillisecondsUntilNextPhilippineMidnight());
+
+  if (typeof scheduledRefreshTimer.unref === "function") {
+    scheduledRefreshTimer.unref();
+  }
+};
+
+export const scheduleAutomaticEventCatalogRefresh = async () => {
+  await scheduleNextAutomaticRefresh();
+
+  return {
+    enabled: AUTO_REFRESH_ENABLED,
+    nextScheduledAt: refreshState.nextScheduledAt,
+    dailyCreditLimit: DAILY_CREDIT_LIMIT,
+    filters: DEFAULT_SEARCH_FILTERS.slice(0, DAILY_CREDIT_LIMIT),
+  };
+};
+
+export const triggerStartupEventCatalogRefresh = async () => {
+  if (!AUTO_REFRESH_ENABLED || !AUTO_REFRESH_ON_STARTUP) {
+    return {
+      skipped: true,
+      reason: "startup-disabled",
+    };
+  }
+
+  return refreshEventCatalog({ reason: "startup" });
 };

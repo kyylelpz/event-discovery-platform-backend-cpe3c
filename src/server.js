@@ -13,6 +13,10 @@ import interactionRoutes from "./routes/interactions.js";
 import notificationRoutes from "./routes/notifications.js";
 import profileRoutes from "./routes/profile.js";
 import userRoutes from "./routes/users.js";
+import {
+  scheduleAutomaticEventCatalogRefresh,
+  triggerStartupEventCatalogRefresh,
+} from "./services/eventSync.js";
 import { syncMockEventCatalog } from "./services/mockEventCatalog.js";
 import { syncMockUserCatalog } from "./services/mockUserCatalog.js";
 
@@ -91,6 +95,14 @@ app.get("/api/health", (req, res) => {
 const PORT = process.env.PORT || process.env.APP_PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+void scheduleAutomaticEventCatalogRefresh().catch((error) => {
+  console.error("Unable to schedule the SerpAPI event refresh:", error);
+});
+
+void triggerStartupEventCatalogRefresh().catch((error) => {
+  console.error("Unable to refresh the SerpAPI event catalog on startup:", error);
 });
 
 void syncMockEventCatalog({ reason: "startup" }).catch((error) => {
