@@ -35,6 +35,58 @@ const getPasswordResetEmailMarkup = ({ name, code }) => `
   </div>
 `;
 
+const escapeHtml = (value) =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const getSupportRequestEmailMarkup = ({
+  id,
+  name,
+  email,
+  topicLabel,
+  message,
+  submittedBy,
+  createdAt,
+}) => `
+  <div style="font-family: Arial, sans-serif; padding: 24px; color: #1f1a17;">
+    <h2 style="margin: 0 0 12px;">New Eventcinity support request</h2>
+    <p style="margin: 0 0 16px;">
+      A new Contact Support submission was received.
+    </p>
+    <table style="width: 100%; border-collapse: collapse; margin: 0 0 20px;">
+      <tbody>
+        <tr>
+          <td style="padding: 8px 0; font-weight: 700;">Ticket ID</td>
+          <td style="padding: 8px 0;">${escapeHtml(id)}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; font-weight: 700;">From</td>
+          <td style="padding: 8px 0;">${escapeHtml(name)} &lt;${escapeHtml(email)}&gt;</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; font-weight: 700;">Topic</td>
+          <td style="padding: 8px 0;">${escapeHtml(topicLabel || "General Support")}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; font-weight: 700;">Submitted By</td>
+          <td style="padding: 8px 0;">${escapeHtml(submittedBy || "guest")}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; font-weight: 700;">Submitted At</td>
+          <td style="padding: 8px 0;">${escapeHtml(createdAt || "")}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="padding: 16px 18px; border-radius: 12px; background: #f3eee6; white-space: pre-wrap; line-height: 1.6;">
+      ${escapeHtml(message)}
+    </div>
+  </div>
+`;
+
 const createEmailError = (code, message, cause = null) => {
   const error = new Error(message);
   error.code = code;
@@ -126,7 +178,7 @@ const getBrevoConfig = () => {
   };
 };
 
-const sendWithResend = async ({ to, subject, html }) => {
+const sendWithResend = async ({ to, subject, html, text = "", replyTo = "" }) => {
   const { apiKey, fromEmail, fromName } = getResendConfig();
 
   if (!apiKey || !fromEmail) {
@@ -144,6 +196,8 @@ const sendWithResend = async ({ to, subject, html }) => {
       to: [to],
       subject,
       html,
+      text,
+      ...(replyTo ? { reply_to: replyTo } : {}),
     }),
   });
 
@@ -158,7 +212,7 @@ const sendWithResend = async ({ to, subject, html }) => {
   return true;
 };
 
-const sendWithBrevo = async ({ to, subject, html }) => {
+const sendWithBrevo = async ({ to, subject, html, text = "", replyTo = "" }) => {
   const { apiKey, fromEmail, fromName } = getBrevoConfig();
 
   if (!apiKey || !fromEmail) {
@@ -179,6 +233,8 @@ const sendWithBrevo = async ({ to, subject, html }) => {
       to: [{ email: to }],
       subject,
       htmlContent: html,
+      textContent: text,
+      ...(replyTo ? { replyTo: { email: replyTo } } : {}),
     }),
   });
 
@@ -245,29 +301,95 @@ export const sendPasswordResetEmail = async ({ email, name, code }) => {
 };
 
 const sendAuthCodeEmail = async ({ email, subject, html }) => {
+  return sendTransactionalEmail({ to: email, subject, html });
+};
+
+export const sendSupportRequestEmail = async ({
+  id,
+  name,
+  email,
+  topicLabel,
+  message,
+  submittedBy,
+  createdAt,
+  recipient = String(process.env.SUPPORT_EMAIL_ADDRESS || "lopez.kyle922@gmail.com")
+    .trim()
+    .toLowerCase(),
+}) => {
+  const safeRecipient = recipient || "lopez.kyle922@gmail.com";
+  const safeTopicLabel = String(topicLabel || "General Support").trim() || "General Support";
+  const subject = `[Support] ${safeTopicLabel} (${id})`;
+  const html = getSupportRequestEmailMarkup({
+    id,
+    name,
+    email,
+    topicLabel: safeTopicLabel,
+    message,
+    submittedBy,
+    createdAt,
+  });
+  const text = [
+    "New Eventcinity support request",
+    `Ticket ID: ${id}`,
+    `From: ${name} <${email}>`,
+    `Topic: ${safeTopicLabel}`,
+    `Submitted By: ${submittedBy || "guest"}`,
+    `Submitted At: ${createdAt || ""}`,
+    "",
+    message,
+  ].join("\n");
+
+  return sendTransactionalEmail({
+    to: safeRecipient,
+    subject,
+    html,
+    text,
+    replyTo: email,
+  });
+};
+
+const sendTransactionalEmail = async ({
+  to,
+  subject,
+  html,
+  text = "",
+  replyTo = "",
+}) => {
   const activeProvider = getConfiguredProvider();
 
   if (activeProvider === EMAIL_PROVIDER_RESEND) {
     requireConfiguredProvider(activeProvider);
-    return sendWithResend({ to: email, subject, html });
+    return sendWithResend({ to, subject, html, text, replyTo });
   }
 
   if (activeProvider === EMAIL_PROVIDER_BREVO) {
     requireConfiguredProvider(activeProvider);
-    return sendWithBrevo({ to: email, subject, html });
+    return sendWithBrevo({ to, subject, html, text, replyTo });
   }
 
   if (activeProvider) {
     requireConfiguredProvider(activeProvider);
   }
 
-  const resendWorked = await sendWithResend({ to: email, subject, html });
+  const resendWorked = await sendWithResend({
+    to,
+    subject,
+    html,
+    text,
+    replyTo,
+  });
 
   if (resendWorked) {
     return true;
   }
 
-  const brevoWorked = await sendWithBrevo({ to: email, subject, html });
+  const brevoWorked = await sendWithBrevo({
+    to,
+    subject,
+    html,
+    text,
+    replyTo,
+  });
 
   if (brevoWorked) {
     return true;

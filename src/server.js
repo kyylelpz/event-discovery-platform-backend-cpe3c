@@ -12,6 +12,7 @@ import eventRoutes from "./routes/events.js";
 import interactionRoutes from "./routes/interactions.js";
 import notificationRoutes from "./routes/notifications.js";
 import profileRoutes from "./routes/profile.js";
+import supportRoutes from "./routes/support.js";
 import userRoutes from "./routes/users.js";
 import {
   scheduleAutomaticEventCatalogRefresh,
@@ -65,6 +66,7 @@ app.use("/api/events", eventRoutes);
 app.use("/api/interactions", interactionRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/profile", profileRoutes);
+app.use("/api/support", supportRoutes);
 app.use("/api/users", userRoutes);
 
 app.use((error, req, res, next) => {
