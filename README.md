@@ -111,7 +111,7 @@ GET /api/notifications
 
 ---
 
-## 🗄️ Database Design
+## Database Design
 
 Two MongoDB databases:
 
@@ -122,7 +122,7 @@ Two MongoDB databases:
 
 ---
 
-## ⚙️ Environment Configuration
+## Environment Configuration
 
 Create `.env` file:
 
